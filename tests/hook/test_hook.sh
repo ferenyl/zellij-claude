@@ -1,6 +1,10 @@
 #!/bin/sh
 # Tests scripts/claude-zellij-hook.sh in a hermetic PATH with a stub `zellij`
 # and a temporary status directory. Requires jq. Exits non-zero on failure.
+#
+# Assertions are single-quoted strings evaluated later by `check`, so variables in
+# them expand at check time and look unused or unexpanded to shellcheck.
+# shellcheck disable=SC2016,SC2034
 set -u
 
 root=$(cd "$(dirname "$0")/../.." && pwd)

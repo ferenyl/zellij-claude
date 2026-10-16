@@ -23,6 +23,11 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
+      # Zellij config and layouts are KDL v1; kdl 5+ parses KDL v2. The examples test
+      # must use the same KDL version as Zellij, so stay on kdl 4.x.
+      - dependency-name: "kdl"
+        update-types:
+          - "version-update:semver-major"
 
   - package-ecosystem: "github-actions"
     directory: "/"

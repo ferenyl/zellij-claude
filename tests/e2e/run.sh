@@ -20,6 +20,7 @@ export HOME="$work/home" XDG_CACHE_HOME="$work/cache" ZELLIJ_SOCKET_DIR="$sock"
 unset ZELLIJ ZELLIJ_SESSION_NAME ZELLIJ_PANE_ID XDG_CONFIG_HOME
 mkdir -p "$HOME" "$XDG_CACHE_HOME/zellij" "$XDG_CACHE_HOME/claude-zellij"
 
+# shellcheck disable=SC2317,SC2329 # invoked through the EXIT trap
 cleanup() {
     zellij kill-session "$session" >/dev/null 2>&1 || true
     [ -n "${client:-}" ] && kill "$client" 2>/dev/null
