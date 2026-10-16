@@ -1,0 +1,18 @@
+// Narrow Claude status column on the right of every tab.
+// Use with: zellij --layout examples/layout-vertical.kdl
+layout {
+    default_tab_template {
+        pane split_direction="vertical" {
+            children
+            pane size=6 borderless=true {
+                plugin location="file:~/.config/zellij/plugins/claude-sessions.wasm" {
+                    mode "bar"
+                    orientation "vertical"
+                }
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+    }
+}

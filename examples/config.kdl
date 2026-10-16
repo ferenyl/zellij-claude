@@ -1,0 +1,20 @@
+// Merge into ~/.config/zellij/config.kdl.
+
+keybinds {
+    // Active in normal and locked mode, so it also works with `default_mode "locked"`.
+    shared_among "normal" "locked" {
+        // Opens the Claude sessions picker. Change "Alt c" to any free key.
+        bind "Alt c" {
+            LaunchOrFocusPlugin "file:~/.config/zellij/plugins/claude-sessions.wasm" {
+                floating true
+                move_to_focused_tab true
+                mode "picker"
+                // Optional picker settings, see the README configuration reference:
+                // icons "unicode"
+                // key_up "k,Up"
+                // key_down "j,Down"
+                // key_jump_waiting "w"
+            }
+        }
+    }
+}

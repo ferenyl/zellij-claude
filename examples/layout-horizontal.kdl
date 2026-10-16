@@ -1,0 +1,16 @@
+// One-row Claude status bar above Zellij's tab bar in every tab.
+// Use with: zellij --layout examples/layout-horizontal.kdl
+layout {
+    default_tab_template {
+        children
+        pane size=1 borderless=true {
+            plugin location="file:~/.config/zellij/plugins/claude-sessions.wasm" {
+                mode "bar"
+                align "right"
+            }
+        }
+        pane size=1 borderless=true {
+            plugin location="zellij:tab-bar"
+        }
+    }
+}

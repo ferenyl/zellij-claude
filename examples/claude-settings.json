@@ -1,0 +1,31 @@
+{
+  "hooks": {
+    "SessionStart": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "UserPromptSubmit": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "PreToolUse": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "PostToolUse": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "PermissionRequest": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "Notification": [
+      {
+        "matcher": "permission_prompt",
+        "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }]
+      }
+    ],
+    "Stop": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "SessionEnd": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ]
+  }
+}
