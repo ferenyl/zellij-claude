@@ -1,27 +1,32 @@
-use std::collections::BTreeMap;
-use std::path::{Path, PathBuf};
-use std::time::{SystemTime, UNIX_EPOCH};
+mod host;
+mod picker;
 
-use claude_sessions_core::config::{resolve_status_dir, Config, ConfigWarning, Mode};
-use claude_sessions_core::state::{LivePane, LiveSession, LiveTab, Store};
+use std::collections::BTreeMap;
+use std::path::PathBuf;
+
+use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
+use claude_sessions_core::icons::Icons;
+use claude_sessions_core::keys::Keymap;
+use claude_sessions_core::list::{order, Command, Picker, RowOptions};
+use claude_sessions_core::state::{ClaudeSession, LiveSession, Store};
 use claude_sessions_core::status_file::StatusRecord;
 use zellij_tile::prelude::*;
 
 const PIPE_NAME: &str = "claude-status";
-/// `change_host_folder` remaps this WASI mount to the status directory.
-const HOST_MOUNT: &str = "/host";
 
 #[derive(Default)]
 struct State {
     config: Option<Config>,
-    warnings: Vec<ConfigWarning>,
-    permissions: Option<PermissionStatus>,
+    keymap: Option<Keymap>,
+    icons: Option<Icons>,
+    warnings: Vec<String>,
+    home: Option<String>,
     status_dir: Option<PathBuf>,
     host_folder_ready: bool,
-    host_folder_error: Option<String>,
     store: Store,
     /// `None` until the first `SessionUpdate`; pruning waits for it.
     live: Option<Vec<LiveSession>>,
+    picker: Picker,
     last_error: Option<String>,
 }
 
@@ -29,9 +34,16 @@ register_plugin!(State);
 
 impl ZellijPlugin for State {
     fn load(&mut self, configuration: BTreeMap<String, String>) {
-        let (config, warnings) = Config::parse(&configuration);
+        let (config, config_warnings) = Config::parse(&configuration);
+        let (keymap, key_warnings) = Keymap::from_config(&config);
+        self.warnings = config_warnings
+            .iter()
+            .chain(&key_warnings)
+            .map(ToString::to_string)
+            .collect();
+        self.icons = Some(Icons::from_config(&config));
+        self.keymap = Some(keymap);
         self.config = Some(config);
-        self.warnings = warnings;
 
         request_permission(&[
             PermissionType::ReadApplicationState,
@@ -41,11 +53,10 @@ impl ZellijPlugin for State {
             PermissionType::ReadSessionEnvironmentVariables,
         ]);
         subscribe(&[
-            EventType::PaneUpdate,
-            EventType::TabUpdate,
             EventType::SessionUpdate,
             EventType::Key,
             EventType::Timer,
+            EventType::Visible,
             EventType::PermissionRequestResult,
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
@@ -54,11 +65,12 @@ impl ZellijPlugin for State {
 
     fn update(&mut self, event: Event) -> bool {
         match event {
-            Event::PermissionRequestResult(status) => {
-                self.permissions = Some(status);
-                if status == PermissionStatus::Granted {
-                    self.init_status_dir();
-                }
+            Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                self.init_status_dir();
+                true
+            }
+            Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                self.last_error = Some("permissions denied".into());
                 true
             }
             Event::HostFolderChanged(_) => {
@@ -68,7 +80,10 @@ impl ZellijPlugin for State {
                 true
             }
             Event::FailedToChangeHostFolder(error) => {
-                self.host_folder_error = Some(error.unwrap_or_else(|| "unknown error".into()));
+                self.last_error = Some(format!(
+                    "cannot open status dir: {}",
+                    error.unwrap_or_else(|| "unknown error".into())
+                ));
                 true
             }
             Event::Timer(_) => {
@@ -77,16 +92,15 @@ impl ZellijPlugin for State {
                 true
             }
             Event::SessionUpdate(sessions, _) => {
-                self.live = Some(sessions.iter().map(to_live_session).collect());
+                self.live = Some(sessions.iter().map(host::to_live_session).collect());
                 self.prune();
                 true
             }
-            Event::Key(key)
-                if key.bare_key == BareKey::Esc && self.config().mode == Mode::Picker =>
-            {
-                hide_self();
-                false
+            Event::Visible(true) => {
+                self.picker.reset_filter();
+                true
             }
+            Event::Key(key) if self.config().mode == Mode::Picker => self.handle_key(&key),
             _ => false,
         }
     }
@@ -111,42 +125,13 @@ impl ZellijPlugin for State {
         true
     }
 
-    fn render(&mut self, _rows: usize, _cols: usize) {
-        let mode = match self.config().mode {
-            Mode::Picker => "picker",
-            Mode::Bar => "bar",
-        };
-        println!("claude-sessions [{mode}]");
-        for warning in &self.warnings {
-            println!("warning: {warning}");
-        }
-        println!("permissions: {:?}", self.permissions);
-        println!(
-            "status dir: {}",
-            self.status_dir
-                .as_deref()
-                .map_or("<unresolved>".into(), |p| p.display().to_string())
-        );
-        if let Some(error) = &self.host_folder_error {
-            println!("host folder error: {error}");
-        }
-        if let Some(error) = &self.last_error {
-            println!("error: {error}");
-        }
-        println!("host folder ready: {}", self.host_folder_ready);
-        let live = self.live.as_deref().unwrap_or_default();
-        for session in self.store.sessions(live) {
-            if !self.config().all_sessions && !session.is_current_session {
-                continue;
+    fn render(&mut self, rows: usize, cols: usize) {
+        match self.config().mode {
+            Mode::Picker => self.render_picker(rows, cols),
+            Mode::Bar => {
+                let sessions = self.sessions();
+                println!("{} {}", self.icons().session, sessions.len());
             }
-            println!(
-                "{} pane {} tab {} {} {}",
-                session.zellij_session,
-                session.pane_id,
-                session.tab_name.as_deref().unwrap_or("?"),
-                session.state.as_str(),
-                session.cwd.as_deref().unwrap_or("")
-            );
         }
     }
 }
@@ -156,13 +141,63 @@ impl State {
         self.config.as_ref().expect("config is set in load")
     }
 
+    fn icons(&self) -> &Icons {
+        self.icons.as_ref().expect("icons are set in load")
+    }
+
+    fn sessions(&self) -> Vec<ClaudeSession> {
+        let live = self.live.as_deref().unwrap_or_default();
+        order(self.store.sessions(live), self.config().all_sessions)
+    }
+
+    fn handle_key(&mut self, key: &KeyWithModifier) -> bool {
+        let Some(press) = host::to_key_press(key) else {
+            return false;
+        };
+        let sessions = self.sessions();
+        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        match self.picker.handle_key(press, keymap, &sessions) {
+            Command::None => false,
+            Command::Redraw => true,
+            Command::Close => {
+                hide_self();
+                false
+            }
+            Command::Jump(session) => {
+                picker::jump(&session);
+                false
+            }
+        }
+    }
+
+    fn render_picker(&mut self, rows: usize, cols: usize) {
+        let sessions = self.sessions();
+        let mut warnings = self.warnings.clone();
+        warnings.extend(self.last_error.clone());
+        let config = self.config.as_ref().expect("config is set in load");
+        let icons = self.icons.as_ref().expect("icons are set in load");
+        let options = RowOptions {
+            icons,
+            show_state_text: config.show_state_text,
+            show_cwd: config.show_cwd,
+            home: self.home.as_deref(),
+        };
+        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        let lines = self
+            .picker
+            .render(&sessions, keymap, &options, &warnings, rows, cols);
+        picker::print_lines(&lines, cols);
+    }
+
     fn init_status_dir(&mut self) {
         // get_session_environment_variables: needs ReadSessionEnvironmentVariables.
         let env = get_session_environment_variables();
+        self.home = env.get("HOME").cloned();
         self.status_dir = resolve_status_dir(self.config(), &env);
-        if let Some(dir) = &self.status_dir {
+        match &self.status_dir {
             // change_host_folder: needs FullHdAccess; answered by HostFolderChanged.
-            change_host_folder(dir.clone());
+            Some(dir) => change_host_folder(dir.clone()),
+            None => self.last_error = Some("cannot resolve status dir: set status_dir".into()),
         }
     }
 
@@ -170,67 +205,19 @@ impl State {
         if !self.host_folder_ready {
             return;
         }
-        let entries = match std::fs::read_dir(Path::new(HOST_MOUNT)) {
-            Ok(entries) => entries,
-            Err(error) => {
-                self.last_error = Some(format!("cannot read status dir: {error}"));
-                return;
+        match host::read_status_files() {
+            Ok(records) => {
+                self.store.apply_snapshot(records);
+                self.prune();
             }
-        };
-        let records = entries
-            .filter_map(Result::ok)
-            .map(|e| e.path())
-            .filter(|p| p.extension().is_some_and(|x| x == "json"))
-            .filter_map(|p| std::fs::read_to_string(p).ok())
-            .filter_map(|json| StatusRecord::parse(&json).ok())
-            .collect();
-        self.store.apply_snapshot(records);
-        self.prune();
+            Err(error) => self.last_error = Some(error),
+        }
     }
 
     fn prune(&mut self) {
+        let stale_after = self.config().stale_after_secs;
         if let Some(live) = &self.live {
-            self.store.prune(
-                live,
-                unix_now(),
-                self.config.as_ref().map_or(3600, |c| c.stale_after_secs),
-            );
+            self.store.prune(live, host::unix_now(), stale_after);
         }
-    }
-}
-
-fn unix_now() -> u64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map_or(0, |d| d.as_secs())
-}
-
-fn to_live_session(session: &SessionInfo) -> LiveSession {
-    LiveSession {
-        name: session.name.clone(),
-        is_current: session.is_current_session,
-        tabs: session
-            .tabs
-            .iter()
-            .map(|t| LiveTab {
-                position: t.position,
-                name: t.name.clone(),
-            })
-            .collect(),
-        panes: session
-            .panes
-            .panes
-            .iter()
-            .flat_map(|(tab_position, panes)| {
-                panes.iter().map(move |p| LivePane {
-                    id: p.id,
-                    tab_position: *tab_position,
-                    title: p.title.clone(),
-                    is_plugin: p.is_plugin,
-                    is_floating: p.is_floating,
-                    exited: p.exited,
-                })
-            })
-            .collect(),
     }
 }

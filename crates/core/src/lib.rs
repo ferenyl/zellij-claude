@@ -3,5 +3,9 @@
 
 pub mod config;
 pub mod hook_map;
+pub mod icons;
+pub mod keys;
+pub mod list;
 pub mod state;
 pub mod status_file;
+pub mod truncate;
