@@ -1,15 +1,18 @@
+mod bar;
 mod host;
 mod picker;
 
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
+use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts};
 use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
 use claude_sessions_core::icons::Icons;
 use claude_sessions_core::keys::Keymap;
 use claude_sessions_core::list::{order, Command, Picker, RowOptions};
 use claude_sessions_core::state::{ClaudeSession, LiveSession, Store};
 use claude_sessions_core::status_file::StatusRecord;
+use claude_sessions_core::truncate::truncate_end;
 use zellij_tile::prelude::*;
 
 const PIPE_NAME: &str = "claude-status";
@@ -28,6 +31,10 @@ struct State {
     live: Option<Vec<LiveSession>>,
     picker: Picker,
     last_error: Option<String>,
+    /// Seconds since the status directory was last read.
+    since_poll: f64,
+    /// Blink phase of the waiting icon in the bar.
+    blink_hidden: bool,
 }
 
 register_plugin!(State);
@@ -66,6 +73,10 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
+                if self.config().mode == Mode::Bar {
+                    // set_selectable: only after the permission prompt, which needs focus.
+                    set_selectable(false);
+                }
                 self.init_status_dir();
                 true
             }
@@ -76,7 +87,7 @@ impl ZellijPlugin for State {
             Event::HostFolderChanged(_) => {
                 self.host_folder_ready = true;
                 self.poll_status_files();
-                set_timeout(self.config().poll_interval_secs);
+                set_timeout(self.tick_interval());
                 true
             }
             Event::FailedToChangeHostFolder(error) => {
@@ -86,9 +97,16 @@ impl ZellijPlugin for State {
                 ));
                 true
             }
-            Event::Timer(_) => {
-                self.poll_status_files();
-                set_timeout(self.config().poll_interval_secs);
+            Event::Timer(elapsed) => {
+                self.since_poll += elapsed;
+                if self.since_poll >= self.config().poll_interval_secs {
+                    self.since_poll = 0.0;
+                    self.poll_status_files();
+                }
+                if self.config().blink_waiting {
+                    self.blink_hidden = !self.blink_hidden;
+                }
+                set_timeout(self.tick_interval());
                 true
             }
             Event::SessionUpdate(sessions, _) => {
@@ -128,10 +146,7 @@ impl ZellijPlugin for State {
     fn render(&mut self, rows: usize, cols: usize) {
         match self.config().mode {
             Mode::Picker => self.render_picker(rows, cols),
-            Mode::Bar => {
-                let sessions = self.sessions();
-                println!("{} {}", self.icons().session, sessions.len());
-            }
+            Mode::Bar => self.render_bar(rows, cols),
         }
     }
 }
@@ -148,6 +163,39 @@ impl State {
     fn sessions(&self) -> Vec<ClaudeSession> {
         let live = self.live.as_deref().unwrap_or_default();
         order(self.store.sessions(live), self.config().all_sessions)
+    }
+
+    /// One timer drives both polling and blinking; blinking needs a faster tick.
+    fn tick_interval(&self) -> f64 {
+        let poll = self.config().poll_interval_secs;
+        if self.config().blink_waiting {
+            poll.min(0.5)
+        } else {
+            poll
+        }
+    }
+
+    fn render_bar(&mut self, rows: usize, cols: usize) {
+        if let Some(error) = self
+            .last_error
+            .as_deref()
+            .or(self.warnings.first().map(String::as_str))
+        {
+            print!("{}", truncate_end(&format!("! {error}"), cols));
+            return;
+        }
+        let counts = Counts::from_sessions(&self.sessions());
+        let config = self.config();
+        let options = BarOptions {
+            icons: self.icons(),
+            orientation: config.orientation,
+            align: config.align,
+            vertical_align: config.vertical_align,
+            show_zero: config.show_zero,
+            hide_waiting_icon: config.blink_waiting && self.blink_hidden,
+        };
+        let lines = core_bar::render(counts, &options, rows, cols);
+        bar::print_lines(&lines, config);
     }
 
     fn handle_key(&mut self, key: &KeyWithModifier) -> bool {

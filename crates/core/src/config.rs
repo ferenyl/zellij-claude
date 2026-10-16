@@ -2,6 +2,8 @@ use std::collections::BTreeMap;
 use std::fmt;
 use std::path::PathBuf;
 
+use crate::color::Color;
+
 /// Every configuration key the plugin understands.
 pub const KEYS: &[&str] = &[
     "mode",
@@ -15,6 +17,8 @@ pub const KEYS: &[&str] = &[
     "color_idle",
     "all_sessions",
     "orientation",
+    "align",
+    "vertical_align",
     "show_zero",
     "blink_waiting",
     "status_dir",
@@ -52,6 +56,20 @@ pub enum Orientation {
     Vertical,
 }
 
+/// Horizontal placement of the bar content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Align {
+    Left,
+    Right,
+}
+
+/// Vertical placement of the bar content.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum VerticalAlign {
+    Top,
+    Bottom,
+}
+
 /// Parsed plugin configuration with defaults applied.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Config {
@@ -61,11 +79,13 @@ pub struct Config {
     pub icon_waiting: Option<String>,
     pub icon_idle: Option<String>,
     pub icon_session: Option<String>,
-    pub color_working: Option<String>,
-    pub color_waiting: Option<String>,
-    pub color_idle: Option<String>,
+    pub color_working: Option<Color>,
+    pub color_waiting: Option<Color>,
+    pub color_idle: Option<Color>,
     pub all_sessions: bool,
     pub orientation: Orientation,
+    pub align: Align,
+    pub vertical_align: VerticalAlign,
     pub show_zero: bool,
     pub blink_waiting: bool,
     /// `None` means the default `$XDG_CACHE_HOME/claude-zellij`, see [`resolve_status_dir`].
@@ -97,6 +117,8 @@ impl Config {
             color_idle: None,
             all_sessions: mode == Mode::Picker,
             orientation: Orientation::Auto,
+            align: Align::Left,
+            vertical_align: VerticalAlign::Top,
             show_zero: true,
             blink_waiting: false,
             status_dir: None,
@@ -139,13 +161,19 @@ impl Config {
                 "icon_waiting" => set_text(&mut config.icon_waiting, value),
                 "icon_idle" => set_text(&mut config.icon_idle, value),
                 "icon_session" => set_text(&mut config.icon_session, value),
-                "color_working" => set_text(&mut config.color_working, value),
-                "color_waiting" => set_text(&mut config.color_waiting, value),
-                "color_idle" => set_text(&mut config.color_idle, value),
+                "color_working" => set_color(&mut config.color_working, value),
+                "color_waiting" => set_color(&mut config.color_waiting, value),
+                "color_idle" => set_color(&mut config.color_idle, value),
                 "all_sessions" => parse_bool(value).map(|v| config.all_sessions = v),
                 "orientation" => parse_orientation(value)
                     .map(|v| config.orientation = v)
                     .ok_or("auto | horizontal | vertical"),
+                "align" => parse_align(value)
+                    .map(|v| config.align = v)
+                    .ok_or("left | right"),
+                "vertical_align" => parse_vertical_align(value)
+                    .map(|v| config.vertical_align = v)
+                    .ok_or("top | bottom"),
                 "show_zero" => parse_bool(value).map(|v| config.show_zero = v),
                 "blink_waiting" => parse_bool(value).map(|v| config.blink_waiting = v),
                 "status_dir" => {
@@ -275,6 +303,22 @@ fn parse_orientation(v: &str) -> Option<Orientation> {
     }
 }
 
+fn parse_align(v: &str) -> Option<Align> {
+    match v.to_ascii_lowercase().as_str() {
+        "left" => Some(Align::Left),
+        "right" => Some(Align::Right),
+        _ => None,
+    }
+}
+
+fn parse_vertical_align(v: &str) -> Option<VerticalAlign> {
+    match v.to_ascii_lowercase().as_str() {
+        "top" => Some(VerticalAlign::Top),
+        "bottom" => Some(VerticalAlign::Bottom),
+        _ => None,
+    }
+}
+
 fn parse_bool(v: &str) -> Result<bool, &'static str> {
     match v.to_ascii_lowercase().as_str() {
         "true" | "yes" | "on" | "1" => Ok(true),
@@ -288,6 +332,11 @@ fn set_text(slot: &mut Option<String>, v: &str) -> Result<(), &'static str> {
         return Err("a non-empty string");
     }
     *slot = Some(v.to_string());
+    Ok(())
+}
+
+fn set_color(slot: &mut Option<Color>, v: &str) -> Result<(), &'static str> {
+    *slot = Some(Color::parse(v).ok_or("#rrggbb, 0-255 or a color name like red")?);
     Ok(())
 }
 
@@ -352,6 +401,9 @@ mod tests {
             ("stale_after_secs", "60"),
             ("key_up", " K , Up ,"),
             ("status_dir", "/tmp/x"),
+            ("color_idle", "#00ff00"),
+            ("align", "Right"),
+            ("vertical_align", "bottom"),
         ]));
 
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -363,6 +415,9 @@ mod tests {
         assert_eq!(config.stale_after_secs, 60);
         assert_eq!(config.key_up, vec!["K", "Up"]);
         assert_eq!(config.status_dir, Some(PathBuf::from("/tmp/x")));
+        assert_eq!(config.color_idle, Some(Color::Rgb(0, 255, 0)));
+        assert_eq!(config.align, Align::Right);
+        assert_eq!(config.vertical_align, VerticalAlign::Bottom);
     }
 
     #[test]
@@ -372,10 +427,11 @@ mod tests {
             ("show_zero", "maybe"),
             ("poll_interval_secs", "-1"),
             ("key_close", " , "),
+            ("color_waiting", "orange"),
         ]));
 
         assert_eq!(config, Config::defaults(Mode::Picker));
-        assert_eq!(warnings.len(), 4);
+        assert_eq!(warnings.len(), 5);
         assert!(warnings
             .iter()
             .all(|w| matches!(w, ConfigWarning::InvalidValue { .. })));
