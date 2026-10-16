@@ -9,17 +9,16 @@ Releases are created in GitHub. Publishing a release triggers
 2. Create the release, either on GitHub under *Releases → Draft a new release*, or:
 
    ```sh
-   gh release create v1.2.0 --target main --title v1.2.0
+   gh release create v0.1.1 --target main --title v0.1.1
    ```
 
-   - Tag: `vMAJOR.MINOR.PATCH`, created from `main`. The tag decides the version;
-     `Cargo.toml` does not need to be bumped by hand.
-   - Pre-release: use a tag like `v1.2.0-rc.1` and tick *Set as a pre-release*
-     (`--prerelease` with `gh`).
+   - Tag: exactly `vMAJOR.MINOR.PATCH`, e.g. `v0.1.1`, created from `main`. The tag
+     decides the version; `Cargo.toml` does not need to be bumped by hand.
    - Text you write in the release form is kept at the top of the notes. Use it for
      highlights or upgrade notes; the list of changes is generated.
 3. Publish. The workflow then:
-   - sets the crate version from the tag (fails if it is not semantic, e.g. `v1.2`),
+   - sets the crate version from the tag (fails for any other format, e.g. `v1.2`,
+     `0.1.1` or `v0.1.1-rc.1`),
    - runs fmt, clippy and tests,
    - builds `claude-sessions.wasm`,
    - uploads `claude-sessions.wasm`, `claude-zellij-hook.sh`,
@@ -36,7 +35,7 @@ Fix the problem on `main`, then either re-run the workflow from the *Actions* ta
 on the fixed commit:
 
 ```sh
-gh release delete v1.2.0 --cleanup-tag --yes
+gh release delete v0.1.1 --cleanup-tag --yes
 ```
 
 Re-running is safe: assets are replaced and the generated part of the notes is

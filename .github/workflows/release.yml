@@ -33,11 +33,11 @@ jobs:
 
       - name: Set version from tag
         run: |
-          version="${TAG#v}"
-          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
-            echo "::error::Release tag '$TAG' is not a semantic version like v1.2.3 or v1.2.3-rc.1"
+          if ! printf '%s' "$TAG" | grep -Eq '^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$'; then
+            echo "::error::Release tag '$TAG' must have the format vMAJOR.MINOR.PATCH, e.g. v0.1.1"
             exit 1
           fi
+          version="${TAG#v}"
           # The first `version = "..."` in the root manifest is [workspace.package].
           sed -i "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml
           cargo update --workspace

@@ -31,20 +31,11 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
-      - name: Build wasm
-        run: cargo build --release --locked --target wasm32-wasip1 -p claude-sessions-plugin
-
       - name: Shellcheck
         run: |
           shopt -s nullglob globstar
           scripts=(scripts/*.sh tests/**/*.sh)
           if [ ${#scripts[@]} -gt 0 ]; then shellcheck "${scripts[@]}"; fi
-
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: claude-sessions-wasm
-          path: target/wasm32-wasip1/release/claude-sessions.wasm
-          if-no-files-found: error
 
   deny:
     runs-on: ubuntu-latest

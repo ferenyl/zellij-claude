@@ -378,7 +378,7 @@ Requirements: Rust from `rust-toolchain.toml` with the `wasm32-wasip1` target, a
 # Build the plugin
 cargo build --release --target wasm32-wasip1 -p claude-sessions-plugin
 
-# Unit, snapshot, examples and README tests (what CI runs, with fmt, clippy and the wasm build)
+# Unit, snapshot, examples and README tests (what CI runs, with fmt and clippy)
 cargo test --workspace
 
 # Hook script tests: hermetic, with a stub `zellij`

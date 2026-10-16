@@ -31,7 +31,8 @@ zellij action start-or-reload-plugin "file:$PWD/target/wasm32-wasip1/release/cla
 
 ## Tests
 
-CI runs formatting, clippy, `cargo test`, the wasm build, shellcheck and cargo-deny.
+CI runs formatting, clippy, `cargo test`, shellcheck and cargo-deny. The wasm plugin is
+only built by the release workflow, so build it locally before opening a pull request.
 Run the same locally before opening a pull request:
 
 ```sh
