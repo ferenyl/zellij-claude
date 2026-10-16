@@ -1,0 +1,10 @@
+[package]
+name = "claude-sessions-core"
+description = "Pure core logic for the zellij-claude sessions plugin"
+version.workspace = true
+edition.workspace = true
+license-file.workspace = true
+repository.workspace = true
+publish = false
+
+[dependencies]
