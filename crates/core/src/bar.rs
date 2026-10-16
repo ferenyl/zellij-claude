@@ -46,7 +46,8 @@ pub struct BarOptions<'a> {
     pub align: Align,
     pub vertical_align: VerticalAlign,
     pub show_zero: bool,
-    /// Blink "off" phase: the waiting icon is replaced by blanks of the same width.
+    /// Blink "off" phase: the waiting icon is replaced by blanks of the same width,
+    /// only while at least one session is waiting.
     pub hide_waiting_icon: bool,
 }
 
@@ -110,7 +111,7 @@ fn items(counts: Counts, options: &BarOptions) -> Vec<Span> {
             continue;
         }
         let icon = icons.for_state(state);
-        let icon = if state == SessionState::Waiting && options.hide_waiting_icon {
+        let icon = if state == SessionState::Waiting && options.hide_waiting_icon && count > 0 {
             " ".repeat(width(icon))
         } else {
             icon.to_string()
@@ -267,6 +268,21 @@ mod tests {
         let lines = render(counts(), &opts, 1, 80);
 
         assert_eq!(texts(&lines), vec!["◆ 3  ● 2    1  ✔ 0"]);
+    }
+
+    #[test]
+    fn no_blink_without_waiting_sessions() {
+        let icons = icons();
+        let mut opts = options(&icons, Orientation::Horizontal);
+        opts.hide_waiting_icon = true;
+        let counts = Counts {
+            waiting: 0,
+            ..counts()
+        };
+
+        let lines = render(counts, &opts, 1, 80);
+
+        assert_eq!(texts(&lines), vec!["◆ 3  ● 2  ▲ 0  ✔ 0"]);
     }
 
     #[test]
