@@ -27,6 +27,9 @@ ignore = true
 multiple-versions = "warn"
 wildcards = "deny"
 allow-wildcard-paths = true
+skip-tree = [
+    { crate = "zellij-tile", reason = "duplicates come from zellij-utils internals and follow the pinned Zellij version" },
+]
 
 [sources]
 unknown-registry = "deny"
