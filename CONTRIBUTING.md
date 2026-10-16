@@ -69,7 +69,9 @@ sh tests/e2e/run.sh          # real, isolated Zellij; needs zellij 0.45.1 and `s
 
 ## Dependencies
 
-Dependabot opens one grouped PR for Cargo updates and one for GitHub Actions.
+Dependabot opens one PR for Cargo and one for GitHub Actions every Wednesday 05:00
+(Europe/Stockholm), each assigned to
+and with review requested from the code owner (`.github/CODEOWNERS`).
 `zellij-tile` only gets patch updates automatically: a minor bump targets a new Zellij
 release and needs a code and compatibility review (update the README compatibility
 table).

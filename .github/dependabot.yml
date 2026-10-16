@@ -1,13 +1,21 @@
 version: 2
+
+# One pull request per ecosystem every Wednesday 05:00 Swedish time, containing all of its updates.
+# Review is requested from the code owner (see .github/CODEOWNERS).
 updates:
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "05:00"
+      timezone: "Europe/Stockholm"
     groups:
       rust:
-        patterns:
-          - "*"
+        patterns: ["*"]
+    assignees: ["ferenyl"]
+    commit-message:
+      prefix: "deps"
     # zellij-tile must match the supported Zellij version. In 0.x, minor bumps are
     # breaking and need a code + compatibility review, so only patch updates are automatic.
     ignore:
@@ -15,16 +23,17 @@ updates:
         update-types:
           - "version-update:semver-major"
           - "version-update:semver-minor"
-    commit-message:
-      prefix: "deps"
 
   - package-ecosystem: "github-actions"
     directory: "/"
     schedule:
       interval: "weekly"
+      day: "wednesday"
+      time: "05:00"
+      timezone: "Europe/Stockholm"
     groups:
       github-actions:
-        patterns:
-          - "*"
+        patterns: ["*"]
+    assignees: ["ferenyl"]
     commit-message:
       prefix: "ci"
