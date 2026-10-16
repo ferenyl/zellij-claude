@@ -81,12 +81,17 @@ impl ZellijPlugin for State {
     fn update(&mut self, event: Event) -> bool {
         match event {
             Event::PermissionRequestResult(PermissionStatus::Granted) => {
-                if self.config().mode == Mode::Bar {
+                match self.config().mode {
                     // set_selectable: only after the permission prompt, which needs focus.
-                    set_selectable(false);
+                    Mode::Bar => set_selectable(false),
+                    // rename_plugin_pane: the frame title would otherwise be the plugin path.
+                    Mode::Picker => {
+                        rename_plugin_pane(get_plugin_ids().plugin_id, "Claude sessions")
+                    }
                 }
                 self.init_status_dir();
                 self.bind_open_key();
+                refresh_session_list();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -114,6 +119,7 @@ impl ZellijPlugin for State {
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
+                    refresh_session_list();
                     if self.host_folder_ready {
                         self.poll_status_files();
                     } else if let Some(dir) = &self.status_dir {
@@ -316,4 +322,11 @@ impl State {
             }
         }
     }
+}
+
+/// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
+/// would list the current session only and live sessions elsewhere would look gone.
+fn refresh_session_list() {
+    // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
+    let _ = get_session_list();
 }

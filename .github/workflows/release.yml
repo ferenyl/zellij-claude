@@ -1,0 +1,135 @@
+name: Release
+
+# Runs when a GitHub Release is published (draft -> published, or created directly).
+# The release tag (e.g. v1.2.3) becomes the crate version for the build; the built
+# files are attached to the release and its notes are filled in.
+on:
+  release:
+    types: [published]
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      id-token: write
+      attestations: write
+    env:
+      TAG: ${{ github.event.release.tag_name }}
+      GH_TOKEN: ${{ github.token }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+
+      - uses: Swatinem/rust-cache@6323deb102c322ba6fcbdcafc7e3dddab59af2b6 # v2.9.2
+
+      - name: Set version from tag
+        run: |
+          version="${TAG#v}"
+          if ! printf '%s' "$version" | grep -Eq '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$'; then
+            echo "::error::Release tag '$TAG' is not a semantic version like v1.2.3 or v1.2.3-rc.1"
+            exit 1
+          fi
+          # The first `version = "..."` in the root manifest is [workspace.package].
+          sed -i "0,/^version = \".*\"/s//version = \"$version\"/" Cargo.toml
+          cargo update --workspace
+          actual=$(cargo metadata --no-deps --format-version 1 | jq -r '[.packages[].version] | unique | join(",")')
+          if [ "$actual" != "$version" ]; then
+            echo "::error::Crate versions are '$actual', expected '$version'"
+            exit 1
+          fi
+          echo "VERSION=$version" >>"$GITHUB_ENV"
+
+      - name: Format
+        run: cargo fmt --all -- --check
+
+      - name: Clippy
+        run: cargo clippy --workspace --all-targets --locked -- -D warnings
+
+      - name: Test
+        run: cargo test --workspace --locked
+
+      - name: Build wasm
+        run: cargo build --release --locked --target wasm32-wasip1 -p claude-sessions-plugin
+
+      - name: Package
+        run: |
+          pkg="claude-sessions-$VERSION"
+          mkdir -p "dist/$pkg"
+          cp target/wasm32-wasip1/release/claude-sessions.wasm dist/
+          cp scripts/claude-zellij-hook.sh dist/
+          mkdir -p "dist/$pkg/docs"
+          cp -r dist/claude-sessions.wasm dist/claude-zellij-hook.sh examples README.md LICENSE CHANGELOG.md "dist/$pkg/"
+          cp -r docs/screenshots "dist/$pkg/docs/"
+          tar -C dist -czf "dist/$pkg.tar.gz" "$pkg"
+          rm -rf "dist/$pkg"
+          (cd dist && sha256sum claude-sessions.wasm claude-zellij-hook.sh "$pkg.tar.gz" >SHA256SUMS)
+          cat dist/SHA256SUMS
+
+      - uses: actions/attest-build-provenance@4d101475d8b20a2381f78447822ac1eab6504dd8 # v4.2.2
+        with:
+          subject-path: |
+            dist/claude-sessions.wasm
+            dist/claude-zellij-hook.sh
+            dist/claude-sessions-*.tar.gz
+
+      - name: Write release notes
+        run: |
+          marker='<!-- release-workflow -->'
+          # Keep what was written in the release form; drop output of an earlier run.
+          jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | tr -d '\r' | sed "/^$marker\$/,\$d" >user.md
+          gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body >generated.md
+          awk -v v="$VERSION" '
+            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
+            found { print }
+          ' CHANGELOG.md >changelog.md
+          zellij_version=$(sed -n 's/^zellij-tile = "\(.*\)"/\1/p' crates/plugin/Cargo.toml)
+          base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
+
+          {
+            if [ -s user.md ]; then cat user.md; echo; fi
+            echo "$marker"
+            if grep -q '[^[:space:]]' changelog.md; then
+              echo "## Changelog"
+              cat changelog.md
+              echo
+            fi
+            cat generated.md
+            echo
+            echo "## Installation"
+            echo
+            echo "Requires Zellij $zellij_version and \`jq\` for the hook script."
+            echo
+            echo '```sh'
+            echo 'mkdir -p ~/.config/zellij/plugins'
+            echo "curl -fsSL -o ~/.config/zellij/plugins/claude-sessions.wasm $base/claude-sessions.wasm"
+            echo "curl -fsSL -o ~/.config/zellij/plugins/claude-zellij-hook.sh $base/claude-zellij-hook.sh"
+            echo 'chmod +x ~/.config/zellij/plugins/claude-zellij-hook.sh'
+            echo '```'
+            echo
+            echo "Or load the plugin straight from the release: \`location=\"$base/claude-sessions.wasm\"\`."
+            echo "Then add the hooks and keybinding as described in the [README](https://github.com/$GITHUB_REPOSITORY/blob/$TAG/README.md)."
+            echo
+            echo "## Checksums"
+            echo
+            echo '```'
+            cat dist/SHA256SUMS
+            echo '```'
+          } >notes.md
+          gh release edit "$TAG" --notes-file notes.md
+
+      - name: Upload release assets
+        run: |
+          gh release upload "$TAG" --clobber \
+            dist/claude-sessions.wasm \
+            dist/claude-zellij-hook.sh \
+            dist/claude-sessions-"$VERSION".tar.gz \
+            dist/SHA256SUMS
