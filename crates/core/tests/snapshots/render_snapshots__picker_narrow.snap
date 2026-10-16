@@ -1,0 +1,11 @@
+---
+source: crates/core/tests/render_snapshots.rs
+expression: "picker_frame(&mut Picker::default(), &sessions(), 10, 30)"
+---
+H |work (current)                |
+* |> ● working backend           |
+R |  ▲ waiting frontend          |
+H |personal                      |
+R |  ✔ idle    notes             |
+R |  ● working a-very-long-tab-n…|
+? |k up  j down  Enter jump  / f…|

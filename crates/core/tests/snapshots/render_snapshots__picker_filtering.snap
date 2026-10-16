@@ -1,0 +1,8 @@
+---
+source: crates/core/tests/render_snapshots.rs
+expression: "picker_frame(&mut picker, &sessions, 8, 60)"
+---
+H |personal                                                    |
+* |> ✔ idle    notes  ~/notes                                  |
+F |/note                                                       |
+? |k up  j down  Enter jump  / filter  w waiting  Esc close    |

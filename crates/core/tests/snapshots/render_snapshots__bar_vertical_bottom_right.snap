@@ -1,0 +1,10 @@
+---
+source: crates/core/tests/render_snapshots.rs
+expression: "bar_frame(counts, &options, 6, 8)"
+---
+|        |
+|        |
+|        |
+|     ◆ 4|
+|     ● 2|
+|     ▲ 1|

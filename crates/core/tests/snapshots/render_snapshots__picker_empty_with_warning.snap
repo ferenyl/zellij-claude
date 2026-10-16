@@ -1,0 +1,7 @@
+---
+source: crates/core/tests/render_snapshots.rs
+expression: "picker_frame_with(&mut Picker::default(), &[], &warnings, 6, 50)"
+---
+W |! unknown config key `colour` ignored             |
+M |No Claude sessions found                          |
+? |k up  j down  Enter jump  / filter  w waiting  Es…|

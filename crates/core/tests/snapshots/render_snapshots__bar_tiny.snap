@@ -1,0 +1,6 @@
+---
+source: crates/core/tests/render_snapshots.rs
+expression: "bar_frame(counts(), &bar_options(&icons, Orientation::Auto), 2, 3)"
+---
+|◆ 4|
+|● 2|
