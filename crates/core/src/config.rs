@@ -37,6 +37,7 @@ pub const KEYS: &[&str] = &[
     "show_state_text",
     "show_cwd",
     "fallback_detect",
+    "isolate_floating",
     "bind_open_key",
     "plugin_location",
 ];
@@ -109,6 +110,8 @@ pub struct Config {
     pub show_cwd: bool,
     /// Also list untracked panes whose title or command mentions Claude.
     pub fallback_detect: bool,
+    /// Picker: hide the tab's other floating panes while open if the floating layer was hidden.
+    pub isolate_floating: bool,
     /// Opt-in: key that this instance binds to open the picker via `reconfigure`.
     pub bind_open_key: Option<String>,
     /// Plugin URL used in the `bind_open_key` binding.
@@ -146,6 +149,7 @@ impl Config {
             show_state_text: true,
             show_cwd: true,
             fallback_detect: false,
+            isolate_floating: true,
             bind_open_key: None,
             plugin_location: DEFAULT_PLUGIN_LOCATION.to_string(),
         }
@@ -220,6 +224,7 @@ impl Config {
                 "show_state_text" => parse_bool(value).map(|v| config.show_state_text = v),
                 "show_cwd" => parse_bool(value).map(|v| config.show_cwd = v),
                 "fallback_detect" => parse_bool(value).map(|v| config.fallback_detect = v),
+                "isolate_floating" => parse_bool(value).map(|v| config.isolate_floating = v),
                 "bind_open_key" => match KeyPress::parse(value) {
                     Some(_) if is_kdl_safe(value) => {
                         config.bind_open_key = Some(value.to_string());

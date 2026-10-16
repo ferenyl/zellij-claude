@@ -7,6 +7,10 @@ use std::path::PathBuf;
 
 use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts};
 use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
+use claude_sessions_core::floating::{
+    became_visible, moved_tab, panes_to_isolate, record_layers, shown_picker_position, Isolation,
+    LayerStates,
+};
 use claude_sessions_core::icons::Icons;
 use claude_sessions_core::keys::{open_picker_binding, Keymap};
 use claude_sessions_core::list::{order, Command, Picker, RowOptions};
@@ -39,6 +43,18 @@ struct State {
     blink_hidden: bool,
     /// A `set_timeout` is pending; there must only ever be one timer chain.
     timer_armed: bool,
+    /// Latest `TabUpdate`. `PaneUpdate` comes first, so this is the state before a change.
+    /// Zellij sends neither event to a hidden plugin, so this is cleared on close.
+    last_tabs: Vec<TabInfo>,
+    /// The picker pane's tab position and `is_suppressed` flag from the last `PaneUpdate`;
+    /// `None` while hidden.
+    own_pane: Option<(usize, bool)>,
+    /// Floating panes hidden while the picker is open.
+    isolation: Option<Isolation>,
+    /// Bar: layer states written for the picker.
+    layers: LayerStates,
+    /// Bar: tab position of a shown picker, from the last `PaneUpdate`.
+    shown_picker: Option<usize>,
 }
 
 register_plugin!(State);
@@ -71,7 +87,8 @@ impl ZellijPlugin for State {
             EventType::SessionUpdate,
             EventType::Key,
             EventType::Timer,
-            EventType::Visible,
+            EventType::TabUpdate,
+            EventType::PaneUpdate,
             EventType::PermissionRequestResult,
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
@@ -101,6 +118,7 @@ impl ZellijPlugin for State {
             Event::HostFolderChanged(_) => {
                 self.host_folder_ready = true;
                 self.last_error = None;
+                self.save_layers();
                 self.poll_status_files();
                 self.arm_timer();
                 true
@@ -137,10 +155,25 @@ impl ZellijPlugin for State {
                 self.prune();
                 true
             }
-            Event::Visible(true) => {
-                self.picker.reset_filter();
-                true
-            }
+            Event::TabUpdate(tabs) => match self.config().mode {
+                Mode::Picker => {
+                    self.last_tabs = tabs;
+                    self.fill_isolation_tab_id();
+                    false
+                }
+                Mode::Bar => {
+                    self.record_layers(&tabs);
+                    false
+                }
+            },
+            Event::PaneUpdate(manifest) => match self.config().mode {
+                Mode::Picker => self.on_pane_update(&manifest),
+                Mode::Bar => {
+                    let panes = host::to_positioned_snapshots(&manifest);
+                    self.shown_picker = shown_picker_position(get_plugin_ids().plugin_id, &panes);
+                    false
+                }
+            },
             Event::Key(key) if self.config().mode == Mode::Picker => self.handle_key(&key),
             _ => false,
         }
@@ -250,14 +283,124 @@ impl State {
             Command::None => false,
             Command::Redraw => true,
             Command::Close => {
-                hide_self();
+                self.close_picker();
                 false
             }
             Command::Jump(session) => {
+                self.close_picker();
                 picker::jump(&session);
                 false
             }
         }
+    }
+
+    fn record_layers(&mut self, tabs: &[TabInfo]) {
+        let tabs: Vec<_> = tabs
+            .iter()
+            .map(|t| (t.position, t.are_floating_panes_visible))
+            .collect();
+        let layers = record_layers(&self.layers, &tabs, self.shown_picker);
+        if layers != self.layers {
+            self.layers = layers;
+            self.save_layers();
+        }
+    }
+
+    fn save_layers(&mut self) {
+        if self.config().mode != Mode::Bar || !self.host_folder_ready {
+            return;
+        }
+        if let Err(error) = host::write_layer_states(get_plugin_ids().zellij_pid, &self.layers) {
+            self.last_error = Some(error);
+        }
+    }
+
+    /// A hidden plugin gets no `PaneUpdate`/`TabUpdate`, so the next one after showing
+    /// again must look like a fresh open, without stale tab state.
+    fn close_picker(&mut self) {
+        picker::close(self.isolation.take());
+        self.own_pane = None;
+        self.last_tabs.clear();
+    }
+
+    /// `Visible` is not sent when a hidden picker is shown again, so its own
+    /// `is_suppressed` flag tells when it opens or closes.
+    fn on_pane_update(&mut self, manifest: &PaneManifest) -> bool {
+        let own_id = get_plugin_ids().plugin_id;
+        let own = manifest.panes.iter().find_map(|(position, panes)| {
+            panes
+                .iter()
+                .find(|p| p.is_plugin && p.id == own_id)
+                .map(|p| (*position, p.is_suppressed))
+        });
+        let was = std::mem::replace(&mut self.own_pane, own);
+        let was_suppressed = was.map(|(_, suppressed)| suppressed);
+        let is_suppressed = own.map(|(_, suppressed)| suppressed);
+        let moved = moved_tab(was, own);
+
+        if moved {
+            // Moved away from the isolated tab by `move_to_focused_tab`.
+            if let Some(isolation) = self.isolation.take() {
+                picker::restore(&isolation);
+            }
+        }
+        if !moved && !became_visible(was_suppressed, is_suppressed) {
+            return false;
+        }
+        self.picker.reset_filter();
+        if let Some((position, _)) = own {
+            self.isolate_floating(own_id, position, manifest);
+        }
+        true
+    }
+
+    fn isolate_floating(&mut self, own_id: u32, position: usize, manifest: &PaneManifest) {
+        if !self.config().isolate_floating || self.isolation.is_some() {
+            return;
+        }
+        // No TabUpdate since the picker was hidden: use the state the bar recorded. Without a
+        // bar assume hidden, otherwise the other panes stay shown after close.
+        let tab = self.last_tabs.iter().find(|t| t.position == position);
+        let layer_was_visible = match tab {
+            Some(tab) => tab.are_floating_panes_visible,
+            None => host::read_layer_states(get_plugin_ids().zellij_pid)
+                .and_then(|layers| layers.get(&position).copied())
+                .unwrap_or(false),
+        };
+        let panes: Vec<_> = manifest
+            .panes
+            .get(&position)
+            .into_iter()
+            .flatten()
+            .map(host::to_pane_snapshot)
+            .collect();
+        let hidden = panes_to_isolate(own_id, &panes, layer_was_visible);
+        if hidden.is_empty() {
+            return;
+        }
+        for pane in &hidden {
+            // hide_pane_with_id: suppresses the pane; needs ChangeApplicationState.
+            hide_pane_with_id(host::to_pane_id(pane.id, pane.is_plugin));
+        }
+        self.isolation = Some(Isolation {
+            tab_id: tab.map(|t| t.tab_id),
+            hidden,
+        });
+    }
+
+    /// The first open has no earlier `TabUpdate`; take the tab id from the one that follows.
+    fn fill_isolation_tab_id(&mut self) {
+        let Some(isolation) = self.isolation.as_mut().filter(|i| i.tab_id.is_none()) else {
+            return;
+        };
+        let Some((position, _)) = self.own_pane else {
+            return;
+        };
+        isolation.tab_id = self
+            .last_tabs
+            .iter()
+            .find(|t| t.position == position)
+            .map(|t| t.tab_id);
     }
 
     fn render_picker(&mut self, rows: usize, cols: usize) {

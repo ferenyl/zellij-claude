@@ -169,6 +169,7 @@ All values are strings, as Zellij passes them. Booleans accept `true`/`false` (a
 | `show_state_text` | `true` | Picker: show the state name in each row |
 | `show_cwd` | `true` | Picker: show the working directory (else the pane title) |
 | `fallback_detect` | `false` | Also list panes without hooks whose title or command mentions Claude (shown as idle) |
+| `isolate_floating` | `true` | Picker: if the floating layer was hidden, hide the other floating panes while the picker is open |
 | `bind_open_key` | none | Opt-in: bind this key to open the picker at load time, e.g. `Alt c` |
 | `plugin_location` | `file:~/.config/zellij/plugins/claude-sessions.wasm` | Plugin URL used by `bind_open_key` |
 <!-- config-table:end -->
@@ -204,7 +205,13 @@ keybinds {
 
 `shared_among "normal" "locked"` makes it work in both modes, including with `default_mode "locked"`. With `shared_except "locked"` it would not work while locked.
 
-The picker is its own plugin instance. It never toggles or hides your regular floating panes, and it hides itself after a jump.
+The picker is its own plugin instance, and it hides itself after a jump. Zellij shows all floating panes of a tab together, so opening the picker would also reveal floating panes you had hidden. With `isolate_floating true` (the default), the picker hides those panes while it is open and puts them back, at the same position and size, when it closes. Limitations:
+
+- The other floating panes can flash for a moment when the picker opens.
+- Zellij sends no pane or tab updates to a hidden plugin, so the picker gets the floating layer state from the bar (`mode "bar"`), which writes it to `floating-<pid>.state` in `status_dir`. Without a bar in the layout the picker assumes the layer was hidden, so floating panes that were visible are hidden after you close the picker.
+- Pinned floating panes are hidden too while the picker is open.
+- The panes are hidden for the whole tab, so other clients attached to the session see the same.
+- If the plugin crashes while open, the hidden panes stay hidden.
 
 **Alternative:** set `bind_open_key "Alt c"` on a plugin instance that is loaded from your layout (for example the bar). It registers the binding with Zellij's `reconfigure` when the plugin loads, without editing `config.kdl`, and asks for the extra `Reconfigure` permission. It applies to the client the plugin is attached to, so it does not work for instances started with `zellij action launch-plugin`.
 

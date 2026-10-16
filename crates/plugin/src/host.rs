@@ -3,6 +3,9 @@
 use std::path::Path;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+use claude_sessions_core::floating::{
+    decode_layers, encode_layers, layer_file_name, Geometry, HiddenPane, LayerStates, PaneSnapshot,
+};
 use claude_sessions_core::keys::{Key, KeyPress};
 use claude_sessions_core::state::{LivePane, LiveSession, LiveTab};
 use claude_sessions_core::status_file::{file_name, StatusRecord};
@@ -62,6 +65,18 @@ pub fn remove_status_file(zellij_session: &str, pane_id: u32) {
     let _ = std::fs::remove_file(Path::new(HOST_MOUNT).join(file_name(zellij_session, pane_id)));
 }
 
+pub fn write_layer_states(zellij_pid: u32, layers: &LayerStates) -> Result<(), String> {
+    let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
+    std::fs::write(path, encode_layers(layers))
+        .map_err(|e| format!("cannot write layer state: {e}"))
+}
+
+/// `None` if the bar has not written the file (no bar in the layout) or it is unreadable.
+pub fn read_layer_states(zellij_pid: u32) -> Option<LayerStates> {
+    let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
+    decode_layers(&std::fs::read_to_string(path).ok()?)
+}
+
 pub fn to_live_session(session: &SessionInfo) -> LiveSession {
     LiveSession {
         name: session.name.clone(),
@@ -91,6 +106,53 @@ pub fn to_live_session(session: &SessionInfo) -> LiveSession {
             })
             .collect(),
     }
+}
+
+pub fn to_pane_snapshot(pane: &PaneInfo) -> PaneSnapshot {
+    PaneSnapshot {
+        id: pane.id,
+        is_plugin: pane.is_plugin,
+        is_floating: pane.is_floating,
+        is_suppressed: pane.is_suppressed,
+        plugin_url: pane.plugin_url.clone(),
+        geometry: Geometry {
+            x: pane.pane_x,
+            y: pane.pane_y,
+            cols: pane.pane_columns,
+            rows: pane.pane_rows,
+        },
+    }
+}
+
+/// All panes of all tabs, each with its tab position.
+pub fn to_positioned_snapshots(manifest: &PaneManifest) -> Vec<(usize, PaneSnapshot)> {
+    manifest
+        .panes
+        .iter()
+        .flat_map(|(position, panes)| panes.iter().map(|p| (*position, to_pane_snapshot(p))))
+        .collect()
+}
+
+pub fn to_pane_id(id: u32, is_plugin: bool) -> PaneId {
+    if is_plugin {
+        PaneId::Plugin(id)
+    } else {
+        PaneId::Terminal(id)
+    }
+}
+
+/// Fixed coordinates of a hidden pane; pinned and borderless stay as they were.
+pub fn to_coordinates(pane: &HiddenPane) -> Option<(PaneId, FloatingPaneCoordinates)> {
+    let g = pane.geometry;
+    let coordinates = FloatingPaneCoordinates::new(
+        Some(g.x.to_string()),
+        Some(g.y.to_string()),
+        Some(g.cols.to_string()),
+        Some(g.rows.to_string()),
+        None,
+        None,
+    )?;
+    Some((to_pane_id(pane.id, pane.is_plugin), coordinates))
 }
 
 pub fn to_key_press(key: &KeyWithModifier) -> Option<KeyPress> {

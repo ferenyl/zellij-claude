@@ -4,6 +4,7 @@
 pub mod bar;
 pub mod color;
 pub mod config;
+pub mod floating;
 pub mod hook_map;
 pub mod icons;
 pub mod keys;
