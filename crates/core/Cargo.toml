@@ -14,4 +14,4 @@ unicode-width = "0.2"
 
 [dev-dependencies]
 insta = "1.49"
-kdl = "4.7"
+kdl = "6.7"
