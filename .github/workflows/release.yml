@@ -67,7 +67,7 @@ jobs:
           cp target/wasm32-wasip1/release/claude-sessions.wasm dist/
           cp scripts/claude-zellij-hook.sh dist/
           mkdir -p "dist/$pkg/docs"
-          cp -r dist/claude-sessions.wasm dist/claude-zellij-hook.sh examples README.md LICENSE CHANGELOG.md "dist/$pkg/"
+          cp -r dist/claude-sessions.wasm dist/claude-zellij-hook.sh examples README.md LICENSE "dist/$pkg/"
           cp -r docs/screenshots "dist/$pkg/docs/"
           tar -C dist -czf "dist/$pkg.tar.gz" "$pkg"
           rm -rf "dist/$pkg"
@@ -87,21 +87,12 @@ jobs:
           # Keep what was written in the release form; drop output of an earlier run.
           jq -r '.release.body // ""' "$GITHUB_EVENT_PATH" | tr -d '\r' | sed "/^$marker\$/,\$d" >user.md
           gh api "repos/$GITHUB_REPOSITORY/releases/generate-notes" -f tag_name="$TAG" --jq .body >generated.md
-          awk -v v="$VERSION" '
-            /^## / { if (found) exit; if (index($0, "[" v "]")) { found = 1; next } }
-            found { print }
-          ' CHANGELOG.md >changelog.md
           zellij_version=$(sed -n 's/^zellij-tile = "\(.*\)"/\1/p' crates/plugin/Cargo.toml)
           base="https://github.com/$GITHUB_REPOSITORY/releases/download/$TAG"
 
           {
             if [ -s user.md ]; then cat user.md; echo; fi
             echo "$marker"
-            if grep -q '[^[:space:]]' changelog.md; then
-              echo "## Changelog"
-              cat changelog.md
-              echo
-            fi
             cat generated.md
             echo
             echo "## Installation"

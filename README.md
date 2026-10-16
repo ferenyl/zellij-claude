@@ -64,7 +64,7 @@ Each [release](https://github.com/ferenyl/zellij-claude/releases) has these asse
 |-------|----------|
 | `claude-sessions.wasm` | The plugin |
 | `claude-zellij-hook.sh` | The Claude Code hook script |
-| `claude-sessions-<version>.tar.gz` | Both of the above, plus `examples/`, `README.md` with its screenshots, `LICENSE` and `CHANGELOG.md` |
+| `claude-sessions-<version>.tar.gz` | Both of the above, plus `examples/`, `README.md` with its screenshots and `LICENSE` |
 | `SHA256SUMS` | Checksums of all assets |
 
 Verify the download:
