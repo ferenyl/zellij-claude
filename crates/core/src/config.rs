@@ -3,6 +3,10 @@ use std::fmt;
 use std::path::PathBuf;
 
 use crate::color::Color;
+use crate::keys::KeyPress;
+
+/// Default plugin location used by `bind_open_key`.
+pub const DEFAULT_PLUGIN_LOCATION: &str = "file:~/.config/zellij/plugins/claude-sessions.wasm";
 
 /// Every configuration key the plugin understands.
 pub const KEYS: &[&str] = &[
@@ -32,6 +36,9 @@ pub const KEYS: &[&str] = &[
     "key_jump_waiting",
     "show_state_text",
     "show_cwd",
+    "fallback_detect",
+    "bind_open_key",
+    "plugin_location",
 ];
 
 /// Which UI the plugin instance renders.
@@ -100,6 +107,12 @@ pub struct Config {
     pub key_jump_waiting: Vec<String>,
     pub show_state_text: bool,
     pub show_cwd: bool,
+    /// Also list untracked panes whose title or command mentions Claude.
+    pub fallback_detect: bool,
+    /// Opt-in: key that this instance binds to open the picker via `reconfigure`.
+    pub bind_open_key: Option<String>,
+    /// Plugin URL used in the `bind_open_key` binding.
+    pub plugin_location: String,
 }
 
 impl Config {
@@ -132,6 +145,9 @@ impl Config {
             key_jump_waiting: list(&["w"]),
             show_state_text: true,
             show_cwd: true,
+            fallback_detect: false,
+            bind_open_key: None,
+            plugin_location: DEFAULT_PLUGIN_LOCATION.to_string(),
         }
     }
 
@@ -203,6 +219,22 @@ impl Config {
                 "key_jump_waiting" => set_keys(&mut config.key_jump_waiting, value),
                 "show_state_text" => parse_bool(value).map(|v| config.show_state_text = v),
                 "show_cwd" => parse_bool(value).map(|v| config.show_cwd = v),
+                "fallback_detect" => parse_bool(value).map(|v| config.fallback_detect = v),
+                "bind_open_key" => match KeyPress::parse(value) {
+                    Some(_) if is_kdl_safe(value) => {
+                        config.bind_open_key = Some(value.to_string());
+                        Ok(())
+                    }
+                    _ => Err("a key like `Alt c` or `Ctrl k`"),
+                },
+                "plugin_location" => {
+                    if value.is_empty() || !is_kdl_safe(value) {
+                        Err("a plugin URL without quotes or backslashes")
+                    } else {
+                        config.plugin_location = value.to_string();
+                        Ok(())
+                    }
+                }
                 _ => {
                     warnings.push(ConfigWarning::UnknownKey(key.clone()));
                     Ok(())
@@ -301,6 +333,11 @@ fn parse_orientation(v: &str) -> Option<Orientation> {
         "vertical" => Some(Orientation::Vertical),
         _ => None,
     }
+}
+
+/// Values interpolated into the generated keybinding KDL must not break out of a string.
+fn is_kdl_safe(v: &str) -> bool {
+    !v.contains(['"', '\\', '\n', '\r'])
 }
 
 fn parse_align(v: &str) -> Option<Align> {
@@ -404,6 +441,9 @@ mod tests {
             ("color_idle", "#00ff00"),
             ("align", "Right"),
             ("vertical_align", "bottom"),
+            ("fallback_detect", "true"),
+            ("bind_open_key", "Alt c"),
+            ("plugin_location", "file:/opt/claude.wasm"),
         ]));
 
         assert!(warnings.is_empty(), "{warnings:?}");
@@ -418,6 +458,9 @@ mod tests {
         assert_eq!(config.color_idle, Some(Color::Rgb(0, 255, 0)));
         assert_eq!(config.align, Align::Right);
         assert_eq!(config.vertical_align, VerticalAlign::Bottom);
+        assert!(config.fallback_detect);
+        assert_eq!(config.bind_open_key.as_deref(), Some("Alt c"));
+        assert_eq!(config.plugin_location, "file:/opt/claude.wasm");
     }
 
     #[test]
@@ -428,10 +471,12 @@ mod tests {
             ("poll_interval_secs", "-1"),
             ("key_close", " , "),
             ("color_waiting", "orange"),
+            ("bind_open_key", "Alt \"c"),
+            ("plugin_location", "file:/x\" } bind"),
         ]));
 
         assert_eq!(config, Config::defaults(Mode::Picker));
-        assert_eq!(warnings.len(), 5);
+        assert_eq!(warnings.len(), 7);
         assert!(warnings
             .iter()
             .all(|w| matches!(w, ConfigWarning::InvalidValue { .. })));

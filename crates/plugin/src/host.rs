@@ -5,11 +5,13 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use claude_sessions_core::keys::{Key, KeyPress};
 use claude_sessions_core::state::{LivePane, LiveSession, LiveTab};
-use claude_sessions_core::status_file::StatusRecord;
+use claude_sessions_core::status_file::{file_name, StatusRecord};
 use zellij_tile::prelude::*;
 
 /// `change_host_folder` remaps this WASI mount to the status directory.
 const HOST_MOUNT: &str = "/host";
+/// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
+const MAX_STATUS_FILES: usize = 500;
 
 pub fn unix_now() -> u64 {
     SystemTime::now()
@@ -17,17 +19,47 @@ pub fn unix_now() -> u64 {
         .map_or(0, |d| d.as_secs())
 }
 
-/// Reads every `*.json` status file under `/host`; unparsable files are skipped.
-pub fn read_status_files() -> Result<Vec<StatusRecord>, String> {
+/// Status files read from `/host`, plus problems worth showing to the user.
+pub struct StatusFiles {
+    pub records: Vec<StatusRecord>,
+    pub invalid: usize,
+    pub truncated: bool,
+}
+
+/// Reads up to [`MAX_STATUS_FILES`] `*.json` status files under `/host`.
+pub fn read_status_files() -> Result<StatusFiles, String> {
     let entries = std::fs::read_dir(Path::new(HOST_MOUNT))
         .map_err(|e| format!("cannot read status dir: {e}"))?;
-    Ok(entries
+    let mut paths: Vec<_> = entries
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
-        .filter_map(|p| std::fs::read_to_string(p).ok())
-        .filter_map(|json| StatusRecord::parse(&json).ok())
-        .collect())
+        .collect();
+    let truncated = paths.len() > MAX_STATUS_FILES;
+    paths.truncate(MAX_STATUS_FILES);
+
+    let mut records = Vec::with_capacity(paths.len());
+    let mut invalid = 0;
+    for path in paths {
+        match std::fs::read_to_string(path)
+            .map_err(|e| e.to_string())
+            .and_then(|json| StatusRecord::parse(&json))
+        {
+            Ok(record) => records.push(record),
+            Err(_) => invalid += 1,
+        }
+    }
+    Ok(StatusFiles {
+        records,
+        invalid,
+        truncated,
+    })
+}
+
+/// Deletes a pruned session's status file. Missing files are fine: every plugin
+/// instance prunes the same entries.
+pub fn remove_status_file(zellij_session: &str, pane_id: u32) {
+    let _ = std::fs::remove_file(Path::new(HOST_MOUNT).join(file_name(zellij_session, pane_id)));
 }
 
 pub fn to_live_session(session: &SessionInfo) -> LiveSession {
@@ -54,6 +86,7 @@ pub fn to_live_session(session: &SessionInfo) -> LiveSession {
                     is_plugin: p.is_plugin,
                     is_floating: p.is_floating,
                     exited: p.exited,
+                    command: p.terminal_command.clone(),
                 })
             })
             .collect(),

@@ -3,6 +3,10 @@ use std::collections::{BTreeMap, BTreeSet};
 use crate::hook_map::{event_to_state, SessionState, StateChange};
 use crate::status_file::StatusRecord;
 
+/// A pane missing from a live session is kept this long after its last update,
+/// since `SessionUpdate` can lag behind a newly opened pane.
+const NEW_PANE_GRACE_SECS: u64 = 10;
+
 /// Identifies a Claude session by its Zellij session name and terminal pane id.
 pub type SessionKey = (String, u32);
 
@@ -29,6 +33,8 @@ pub struct LivePane {
     pub is_plugin: bool,
     pub is_floating: bool,
     pub exited: bool,
+    /// Command of a command pane; `None` for shell panes.
+    pub command: Option<String>,
 }
 
 /// A tracked Claude session joined with live Zellij data.
@@ -117,8 +123,8 @@ impl Store {
     }
 
     /// Removes sessions whose pane is gone. In a live Zellij session the pane must exist
-    /// as a running terminal; in a session that is not live, entries expire after
-    /// `stale_after_secs`. Returns the removed keys.
+    /// as a running terminal (after a short grace period for new panes); in a session
+    /// that is not live, entries expire after `stale_after_secs`. Returns the removed keys.
     pub fn prune(
         &mut self,
         live: &[LiveSession],
@@ -128,7 +134,10 @@ impl Store {
         let mut removed = Vec::new();
         self.entries.retain(|key, entry| {
             let keep = match live.iter().find(|s| s.name == key.0) {
-                Some(session) => find_terminal(session, key.1).is_some(),
+                Some(session) => {
+                    find_terminal(session, key.1).is_some()
+                        || now.saturating_sub(entry.updated_at) < NEW_PANE_GRACE_SECS
+                }
                 None => now.saturating_sub(entry.updated_at) < stale_after_secs,
             };
             if !keep {
@@ -143,30 +152,60 @@ impl Store {
     pub fn sessions(&self, live: &[LiveSession]) -> Vec<ClaudeSession> {
         self.entries
             .iter()
-            .map(|((zellij_session, pane_id), entry)| {
-                let session = live.iter().find(|s| &s.name == zellij_session);
-                let pane = session.and_then(|s| find_terminal(s, *pane_id));
-                let tab_name = session.zip(pane).and_then(|(s, p)| {
-                    s.tabs
-                        .iter()
-                        .find(|t| t.position == p.tab_position)
-                        .map(|t| t.name.clone())
-                });
-                ClaudeSession {
-                    zellij_session: zellij_session.clone(),
-                    pane_id: *pane_id,
-                    state: entry.state,
-                    cwd: entry.cwd.clone(),
-                    claude_session_id: entry.claude_session_id.clone(),
-                    updated_at: entry.updated_at,
-                    is_current_session: session.is_some_and(|s| s.is_current),
-                    tab_position: pane.map(|p| p.tab_position),
-                    tab_name,
-                    title: pane.map(|p| p.title.clone()),
-                    is_floating: pane.is_some_and(|p| p.is_floating),
-                }
+            .map(|((zellij_session, pane_id), entry)| join(live, zellij_session, *pane_id, entry))
+            .collect()
+    }
+
+    /// Fallback for setups without hooks: untracked running terminal panes whose
+    /// title or command mentions Claude. Their state is unknown and shown as idle.
+    pub fn detected(&self, live: &[LiveSession]) -> Vec<ClaudeSession> {
+        let entry = Entry {
+            state: SessionState::Idle,
+            cwd: None,
+            claude_session_id: None,
+            updated_at: 0,
+        };
+        live.iter()
+            .flat_map(|session| {
+                session
+                    .panes
+                    .iter()
+                    .filter(|p| !p.is_plugin && !p.exited && looks_like_claude(p))
+                    .filter(|p| !self.entries.contains_key(&(session.name.clone(), p.id)))
+                    .map(|p| join(live, &session.name, p.id, &entry))
             })
             .collect()
+    }
+}
+
+fn looks_like_claude(pane: &LivePane) -> bool {
+    [Some(pane.title.as_str()), pane.command.as_deref()]
+        .into_iter()
+        .flatten()
+        .any(|text| text.to_lowercase().contains("claude"))
+}
+
+fn join(live: &[LiveSession], zellij_session: &str, pane_id: u32, entry: &Entry) -> ClaudeSession {
+    let session = live.iter().find(|s| s.name == zellij_session);
+    let pane = session.and_then(|s| find_terminal(s, pane_id));
+    let tab_name = session.zip(pane).and_then(|(s, p)| {
+        s.tabs
+            .iter()
+            .find(|t| t.position == p.tab_position)
+            .map(|t| t.name.clone())
+    });
+    ClaudeSession {
+        zellij_session: zellij_session.to_string(),
+        pane_id,
+        state: entry.state,
+        cwd: entry.cwd.clone(),
+        claude_session_id: entry.claude_session_id.clone(),
+        updated_at: entry.updated_at,
+        is_current_session: session.is_some_and(|s| s.is_current),
+        tab_position: pane.map(|p| p.tab_position),
+        tab_name,
+        title: pane.map(|p| p.title.clone()),
+        is_floating: pane.is_some_and(|p| p.is_floating),
     }
 }
 
@@ -200,6 +239,7 @@ mod tests {
             is_plugin: false,
             is_floating: false,
             exited: false,
+            command: None,
         }
     }
 
@@ -300,12 +340,56 @@ mod tests {
 
         let removed = store.prune(
             &[live("work", true, vec![pane(1, 0), plugin, exited])],
-            10,
+            100,
             3600,
         );
 
         assert_eq!(removed, vec![("work".into(), 2), ("work".into(), 3)]);
         assert_eq!(states(&store), vec![("work".into(), 1, SessionState::Idle)]);
+    }
+
+    #[test]
+    fn prune_keeps_fresh_entry_whose_pane_is_not_reported_yet() {
+        let mut store = Store::default();
+        store.apply(record("work", 9, "SessionStart", 100));
+
+        let removed = store.prune(&[live("work", true, vec![pane(1, 0)])], 105, 3600);
+
+        assert!(removed.is_empty());
+        assert_eq!(
+            store
+                .prune(&[live("work", true, vec![pane(1, 0)])], 110, 3600)
+                .len(),
+            1
+        );
+    }
+
+    #[test]
+    fn detects_untracked_claude_panes_by_title_or_command() {
+        let mut store = Store::default();
+        store.apply(record("work", 1, "Stop", 10));
+        let mut tracked = pane(1, 0);
+        tracked.title = "claude".into();
+        let mut by_title = pane(2, 1);
+        by_title.title = "✳ Claude Code".into();
+        let mut by_command = pane(3, 0);
+        by_command.command = Some("/usr/bin/claude --resume".into());
+        let mut plugin = pane(4, 0);
+        plugin.title = "claude-sessions".into();
+        plugin.is_plugin = true;
+
+        let detected = store.detected(&[live(
+            "work",
+            true,
+            vec![tracked, by_title, by_command, pane(5, 0), plugin],
+        )]);
+
+        let found: Vec<_> = detected.iter().map(|s| (s.pane_id, s.state)).collect();
+        assert_eq!(
+            found,
+            vec![(2, SessionState::Idle), (3, SessionState::Idle)]
+        );
+        assert_eq!(detected[0].tab_name.as_deref(), Some("frontend"));
     }
 
     #[test]

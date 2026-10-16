@@ -8,7 +8,7 @@ use std::path::PathBuf;
 use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts};
 use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
 use claude_sessions_core::icons::Icons;
-use claude_sessions_core::keys::Keymap;
+use claude_sessions_core::keys::{open_picker_binding, Keymap};
 use claude_sessions_core::list::{order, Command, Picker, RowOptions};
 use claude_sessions_core::state::{ClaudeSession, LiveSession, Store};
 use claude_sessions_core::status_file::StatusRecord;
@@ -31,10 +31,14 @@ struct State {
     live: Option<Vec<LiveSession>>,
     picker: Picker,
     last_error: Option<String>,
+    /// Non-fatal problem from the last status directory read.
+    poll_warning: Option<String>,
     /// Seconds since the status directory was last read.
     since_poll: f64,
     /// Blink phase of the waiting icon in the bar.
     blink_hidden: bool,
+    /// A `set_timeout` is pending; there must only ever be one timer chain.
+    timer_armed: bool,
 }
 
 register_plugin!(State);
@@ -52,13 +56,17 @@ impl ZellijPlugin for State {
         self.keymap = Some(keymap);
         self.config = Some(config);
 
-        request_permission(&[
+        let mut permissions = vec![
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::FullHdAccess,
             PermissionType::ReadSessionEnvironmentVariables,
-        ]);
+        ];
+        if self.config().bind_open_key.is_some() {
+            permissions.push(PermissionType::Reconfigure);
+        }
+        request_permission(&permissions);
         subscribe(&[
             EventType::SessionUpdate,
             EventType::Key,
@@ -78,6 +86,7 @@ impl ZellijPlugin for State {
                     set_selectable(false);
                 }
                 self.init_status_dir();
+                self.bind_open_key();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -86,27 +95,35 @@ impl ZellijPlugin for State {
             }
             Event::HostFolderChanged(_) => {
                 self.host_folder_ready = true;
+                self.last_error = None;
                 self.poll_status_files();
-                set_timeout(self.tick_interval());
+                self.arm_timer();
                 true
             }
             Event::FailedToChangeHostFolder(error) => {
+                // Usually the directory does not exist until the hook first runs; retried on the timer.
                 self.last_error = Some(format!(
-                    "cannot open status dir: {}",
+                    "waiting for status dir ({}), retrying",
                     error.unwrap_or_else(|| "unknown error".into())
                 ));
+                self.arm_timer();
                 true
             }
             Event::Timer(elapsed) => {
+                self.timer_armed = false;
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
-                    self.poll_status_files();
+                    if self.host_folder_ready {
+                        self.poll_status_files();
+                    } else if let Some(dir) = &self.status_dir {
+                        change_host_folder(dir.clone());
+                    }
                 }
                 if self.config().blink_waiting {
                     self.blink_hidden = !self.blink_hidden;
                 }
-                set_timeout(self.tick_interval());
+                self.arm_timer();
                 true
             }
             Event::SessionUpdate(sessions, _) => {
@@ -162,7 +179,26 @@ impl State {
 
     fn sessions(&self) -> Vec<ClaudeSession> {
         let live = self.live.as_deref().unwrap_or_default();
-        order(self.store.sessions(live), self.config().all_sessions)
+        let mut sessions = self.store.sessions(live);
+        if self.config().fallback_detect {
+            sessions.extend(self.store.detected(live));
+        }
+        order(sessions, self.config().all_sessions)
+    }
+
+    fn bind_open_key(&self) {
+        let config = self.config();
+        if let Some(key) = &config.bind_open_key {
+            // reconfigure: needs Reconfigure; `false` keeps the user's config file untouched.
+            reconfigure(open_picker_binding(key, &config.plugin_location), false);
+        }
+    }
+
+    fn arm_timer(&mut self) {
+        if !self.timer_armed {
+            set_timeout(self.tick_interval());
+            self.timer_armed = true;
+        }
     }
 
     /// One timer drives both polling and blinking; blinking needs a faster tick.
@@ -222,6 +258,7 @@ impl State {
         let sessions = self.sessions();
         let mut warnings = self.warnings.clone();
         warnings.extend(self.last_error.clone());
+        warnings.extend(self.poll_warning.clone());
         let config = self.config.as_ref().expect("config is set in load");
         let icons = self.icons.as_ref().expect("icons are set in load");
         let options = RowOptions {
@@ -254,8 +291,13 @@ impl State {
             return;
         }
         match host::read_status_files() {
-            Ok(records) => {
-                self.store.apply_snapshot(records);
+            Ok(files) => {
+                self.poll_warning = match (files.truncated, files.invalid) {
+                    (true, _) => Some("too many status files, some were skipped".into()),
+                    (false, 0) => None,
+                    (false, n) => Some(format!("{n} unreadable status file(s) ignored")),
+                };
+                self.store.apply_snapshot(files.records);
                 self.prune();
             }
             Err(error) => self.last_error = Some(error),
@@ -264,8 +306,14 @@ impl State {
 
     fn prune(&mut self) {
         let stale_after = self.config().stale_after_secs;
-        if let Some(live) = &self.live {
-            self.store.prune(live, host::unix_now(), stale_after);
+        let Some(live) = &self.live else {
+            return;
+        };
+        let removed = self.store.prune(live, host::unix_now(), stale_after);
+        if self.host_folder_ready {
+            for (zellij_session, pane_id) in removed {
+                host::remove_status_file(&zellij_session, pane_id);
+            }
         }
     }
 }

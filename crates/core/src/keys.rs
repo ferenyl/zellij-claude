@@ -148,6 +148,24 @@ impl Keymap {
     }
 }
 
+/// Keybinding KDL for `reconfigure` that opens the picker on `key`. Both values are
+/// validated by config parsing to contain no quotes or backslashes.
+pub fn open_picker_binding(key: &str, plugin_location: &str) -> String {
+    format!(
+        r#"keybinds {{
+    shared_among "normal" "locked" {{
+        bind "{key}" {{
+            LaunchOrFocusPlugin "{plugin_location}" {{
+                floating true
+                move_to_focused_tab true
+                mode "picker"
+            }}
+        }}
+    }}
+}}"#
+    )
+}
+
 /// Short display name for a key press in the help line.
 pub fn display(press: KeyPress) -> String {
     let key = match press.key {
@@ -246,6 +264,15 @@ mod tests {
             keymap.action(KeyPress::plain(Key::Char('u'))),
             Some(Action::Up)
         );
+    }
+
+    #[test]
+    fn open_picker_binding_embeds_key_and_location() {
+        let kdl = open_picker_binding("Alt c", "file:/p.wasm");
+
+        assert!(kdl.contains(r#"bind "Alt c""#));
+        assert!(kdl.contains(r#"LaunchOrFocusPlugin "file:/p.wasm""#));
+        assert!(kdl.contains(r#"mode "picker""#));
     }
 
     #[test]
