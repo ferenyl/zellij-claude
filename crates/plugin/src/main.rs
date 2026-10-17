@@ -57,7 +57,7 @@ struct State {
     shown_picker: Option<usize>,
     /// The session environment must be read, but not before the permission is live.
     env_pending: bool,
-    /// Bar: what the last returned `true` rendered, to skip redraws that would look the same.
+    /// Bar: what was last rendered, to skip redraws that would look the same.
     last_bar_view: Option<BarView>,
 }
 
@@ -140,10 +140,6 @@ impl ZellijPlugin for State {
             }
             Event::Timer(elapsed) => {
                 self.timer_armed = false;
-                if self.env_pending {
-                    self.env_pending = false;
-                    self.init_status_dir_from_env();
-                }
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
@@ -162,6 +158,10 @@ impl ZellijPlugin for State {
             }
             Event::SessionUpdate(sessions, _) => {
                 self.live = Some(sessions.iter().map(host::to_live_session).collect());
+                if self.env_pending {
+                    self.env_pending = false;
+                    self.init_status_dir_from_env();
+                }
                 self.prune();
                 self.bar_changed()
             }
@@ -238,23 +238,21 @@ impl State {
         order(sessions, self.config().all_sessions)
     }
 
-    /// Whether a redraw is needed. The bar only changes with its error text, counts or blink
-    /// phase; the picker is always redrawn.
-    fn bar_changed(&mut self) -> bool {
-        if self.config().mode != Mode::Bar {
-            return true;
-        }
+    /// What the bar shows: error text, counts and whether the waiting icon is hidden.
+    fn bar_view(&self) -> BarView {
         let error = self
             .last_error
             .clone()
             .or_else(|| self.warnings.first().cloned());
-        let hide = self.config().blink_waiting && self.blink_hidden;
-        let view = (error, Counts::from_sessions(&self.sessions()), hide);
-        if self.last_bar_view.as_ref() == Some(&view) {
-            return false;
-        }
-        self.last_bar_view = Some(view);
-        true
+        let counts = Counts::from_sessions(&self.sessions());
+        let hide = self.config().blink_waiting && self.blink_hidden && counts.waiting > 0;
+        (error, counts, hide)
+    }
+
+    /// Whether a redraw is needed: the bar differs from what `render_bar` last drew.
+    /// The picker is always redrawn.
+    fn bar_changed(&self) -> bool {
+        self.config().mode != Mode::Bar || self.last_bar_view.as_ref() != Some(&self.bar_view())
     }
 
     fn bind_open_key(&self) {
@@ -283,6 +281,7 @@ impl State {
     }
 
     fn render_bar(&mut self, rows: usize, cols: usize) {
+        self.last_bar_view = Some(self.bar_view());
         if let Some(error) = self
             .last_error
             .as_deref()
@@ -457,7 +456,7 @@ impl State {
 
     fn init_status_dir(&mut self) {
         // The environment is only needed without `status_dir`, or to expand its `~`. Reading it
-        // right after `Granted` can panic in the host shim, so it waits for the next timer.
+        // right after `Granted` can panic in the host shim, so it waits for the next `SessionUpdate`.
         let needs_env = self
             .config()
             .status_dir
@@ -465,7 +464,6 @@ impl State {
             .is_none_or(|dir| dir.starts_with("~"));
         if needs_env {
             self.env_pending = true;
-            self.arm_timer();
         } else {
             self.resolve_status_dir(&BTreeMap::new());
         }
