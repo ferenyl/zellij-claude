@@ -17,11 +17,14 @@
     ],
     "Notification": [
       {
-        "matcher": "permission_prompt",
+        "matcher": "permission_prompt|idle_prompt",
         "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }]
       }
     ],
     "Stop": [
+      { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
+    ],
+    "StopFailure": [
       { "hooks": [{ "type": "command", "command": "~/.config/zellij/plugins/claude-zellij-hook.sh" }] }
     ],
     "SessionEnd": [

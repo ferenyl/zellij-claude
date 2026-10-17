@@ -8,6 +8,9 @@ pub struct StatusRecord {
     pub pane_id: u32,
     /// Raw Claude Code hook event name, mapped by [`crate::hook_map::event_to_state`].
     pub hook_event: String,
+    /// `notification_type` of a `Notification` event, e.g. `idle_prompt`.
+    #[serde(default)]
+    pub notification_type: Option<String>,
     #[serde(default)]
     pub cwd: Option<String>,
     #[serde(default)]
@@ -58,6 +61,7 @@ mod tests {
 
         let record = StatusRecord::parse(json).unwrap();
 
+        assert_eq!(record.notification_type, None);
         assert_eq!(record.cwd, None);
         assert_eq!(record.claude_session_id, None);
     }
