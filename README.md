@@ -98,7 +98,7 @@ cd zellij-claude
 
 Merge [`examples/claude-settings.json`](examples/claude-settings.json) into `~/.claude/settings.json`. It registers the hook script for these events:
 
-`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification` (only `permission_prompt`), `Stop`, `SessionEnd`.
+`SessionStart`, `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PermissionRequest`, `Notification` (only `permission_prompt` and `idle_prompt`), `Stop`, `StopFailure`, `SessionEnd`.
 
 If you already have hooks for an event, add ours as another entry in the same `hooks` list; Claude runs all matching hooks in parallel:
 
@@ -286,7 +286,7 @@ Zellij SessionUpdate (tabs, panes, sessions) ───────────�
 
 | Hook event | State |
 |------------|-------|
-| `SessionStart`, `Stop` | idle |
+| `SessionStart`, `Stop`, `StopFailure`, `Notification` (idle prompt) | idle |
 | `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure` | working |
 | `Notification` (permission prompt), `PermissionRequest` | waiting |
 | `SessionEnd` | removed |
@@ -294,10 +294,10 @@ Zellij SessionUpdate (tabs, panes, sessions) ───────────�
 The hook writes one JSON file per pane to `$CLAUDE_ZELLIJ_STATUS_DIR`, else `$XDG_CACHE_HOME/claude-zellij`, else `~/.cache/claude-zellij`:
 
 ```json
-{"zellij_session":"work","pane_id":12,"hook_event":"Notification","cwd":"/home/user/project","claude_session_id":"abc123","updated_at":1760558400}
+{"zellij_session":"work","pane_id":12,"hook_event":"Notification","notification_type":"permission_prompt","cwd":"/home/user/project","claude_session_id":"abc123","updated_at":1760558400}
 ```
 
-The file is written atomically, then sent over `zellij pipe` so the current session updates at once. Plugin instances in every Zellij session re-read the directory every `poll_interval_secs`, which is how sessions in other Zellij sessions show up. The newest update wins.
+The file is written atomically, then sent over `zellij pipe` so the current session updates at once. Plugin instances in every Zellij session re-read the directory every `poll_interval_secs`, which is how sessions in other Zellij sessions show up. The newest update wins; a tool event never replaces idle from the same second. `idle_prompt` (sent after about a minute without input) resets a pane that missed its `Stop`, e.g. after an interrupt.
 
 Entries are removed when:
 

@@ -31,6 +31,7 @@ main() {
             zellij_session: $session,
             pane_id: $pane,
             hook_event: .hook_event_name,
+            notification_type: .notification_type,
             cwd: .cwd,
             claude_session_id: .session_id,
             updated_at: $now

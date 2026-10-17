@@ -71,12 +71,27 @@ pub struct Store {
 
 impl Store {
     /// Applies one update (pipe message or status file). The newest `updated_at` wins;
-    /// on a tie the update applied last wins.
+    /// on a tie the update applied last wins, except that a tool event never replaces
+    /// idle from the same second: pipe messages are sent in the background and can
+    /// arrive after the `Stop` that followed them.
     pub fn apply(&mut self, record: StatusRecord) {
-        let Some(change) = event_to_state(&record.hook_event) else {
+        let Some(change) = event_to_state(&record.hook_event, record.notification_type.as_deref())
+        else {
             return;
         };
         let key = (record.zellij_session, record.pane_id);
+        let is_tool_event = matches!(
+            record.hook_event.as_str(),
+            "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
+        );
+        if is_tool_event
+            && self
+                .entries
+                .get(&key)
+                .is_some_and(|e| e.updated_at == record.updated_at && e.state == SessionState::Idle)
+        {
+            return;
+        }
         let newest_known = self
             .entries
             .get(&key)
@@ -225,6 +240,7 @@ mod tests {
             zellij_session: session.into(),
             pane_id: pane,
             hook_event: event.into(),
+            notification_type: None,
             cwd: Some("/code".into()),
             claude_session_id: None,
             updated_at: at,
@@ -281,6 +297,42 @@ mod tests {
             states(&store),
             vec![("work".into(), 1, SessionState::Waiting)]
         );
+    }
+
+    #[test]
+    fn tool_event_does_not_replace_idle_from_same_second() {
+        let mut store = Store::default();
+
+        store.apply(record("work", 1, "Stop", 10));
+        store.apply(record("work", 1, "PreToolUse", 10));
+
+        assert_eq!(states(&store), vec![("work".into(), 1, SessionState::Idle)]);
+    }
+
+    #[test]
+    fn prompt_replaces_idle_from_same_second() {
+        let mut store = Store::default();
+
+        store.apply(record("work", 1, "Stop", 10));
+        store.apply(record("work", 1, "UserPromptSubmit", 10));
+
+        assert_eq!(
+            states(&store),
+            vec![("work".into(), 1, SessionState::Working)]
+        );
+    }
+
+    #[test]
+    fn idle_prompt_notification_clears_working() {
+        let mut store = Store::default();
+        store.apply(record("work", 1, "PreToolUse", 10));
+
+        store.apply(StatusRecord {
+            notification_type: Some("idle_prompt".into()),
+            ..record("work", 1, "Notification", 70)
+        });
+
+        assert_eq!(states(&store), vec![("work".into(), 1, SessionState::Idle)]);
     }
 
     #[test]

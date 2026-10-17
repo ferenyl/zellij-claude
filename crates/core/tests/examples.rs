@@ -103,7 +103,7 @@ fn claude_settings_example_registers_known_events() {
 
     for (event, groups) in hooks {
         assert!(
-            event_to_state(event).is_some(),
+            event_to_state(event, None).is_some(),
             "unmapped hook event {event}"
         );
         for group in groups.as_array().unwrap() {

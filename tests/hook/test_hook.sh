@@ -71,10 +71,10 @@ check() {
 file="$status/work-7.json"
 
 reset
-run_hook '{"hook_event_name":"Notification","session_id":"abc","cwd":"/code \"q\""}'
+run_hook '{"hook_event_name":"Notification","notification_type":"idle_prompt","session_id":"abc","cwd":"/code \"q\""}'
 check "exits 0" '[ $? -eq 0 ]'
 check "writes status file" '[ -f "$file" ]'
-check "status file fields" 'jq -e ".zellij_session == \"work\" and .pane_id == 7 and .hook_event == \"Notification\" and .cwd == \"/code \\\"q\\\"\" and .claude_session_id == \"abc\" and (.updated_at | type) == \"number\"" "$file" >/dev/null'
+check "status file fields" 'jq -e ".zellij_session == \"work\" and .pane_id == 7 and .hook_event == \"Notification\" and .notification_type == \"idle_prompt\" and .cwd == \"/code \\\"q\\\"\" and .claude_session_id == \"abc\" and (.updated_at | type) == \"number\"" "$file" >/dev/null'
 check "no temp files left" '[ "$(ls -A "$status" | wc -l)" -eq 1 ]'
 check "sends pipe message" 'wait_for_log 1 && grep -q "^pipe --name claude-status -- {.*\"hook_event\":\"Notification\"" "$log"'
 
