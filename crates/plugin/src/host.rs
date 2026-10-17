@@ -37,6 +37,10 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
         .filter_map(Result::ok)
         .map(|e| e.path())
         .filter(|p| p.extension().is_some_and(|x| x == "json"))
+        .filter(|p| {
+            !p.file_name()
+                .is_some_and(|n| n.to_string_lossy().starts_with('-'))
+        })
         .collect();
     let truncated = paths.len() > MAX_STATUS_FILES;
     paths.truncate(MAX_STATUS_FILES);
@@ -48,6 +52,7 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
             .map_err(|e| e.to_string())
             .and_then(|json| StatusRecord::parse(&json))
         {
+            Ok(record) if record.zellij_session.is_empty() => {}
             Ok(record) => records.push(record),
             Err(_) => invalid += 1,
         }

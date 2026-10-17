@@ -55,7 +55,13 @@ struct State {
     layers: LayerStates,
     /// Bar: tab position of a shown picker, from the last `PaneUpdate`.
     shown_picker: Option<usize>,
+    /// The session environment must be read, but not before the permission is live.
+    env_pending: bool,
+    /// Bar: what the last returned `true` rendered, to skip redraws that would look the same.
+    last_bar_view: Option<BarView>,
 }
+
+type BarView = (Option<String>, Counts, bool);
 
 register_plugin!(State);
 
@@ -134,6 +140,10 @@ impl ZellijPlugin for State {
             }
             Event::Timer(elapsed) => {
                 self.timer_armed = false;
+                if self.env_pending {
+                    self.env_pending = false;
+                    self.init_status_dir_from_env();
+                }
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
@@ -148,12 +158,12 @@ impl ZellijPlugin for State {
                     self.blink_hidden = !self.blink_hidden;
                 }
                 self.arm_timer();
-                true
+                self.bar_changed()
             }
             Event::SessionUpdate(sessions, _) => {
                 self.live = Some(sessions.iter().map(host::to_live_session).collect());
                 self.prune();
-                true
+                self.bar_changed()
             }
             Event::TabUpdate(tabs) => match self.config().mode {
                 Mode::Picker => {
@@ -191,12 +201,15 @@ impl ZellijPlugin for State {
         };
         match StatusRecord::parse(&payload) {
             Ok(record) => {
+                if !is_valid_record(&record) {
+                    return false;
+                }
                 self.store.apply(record);
                 self.prune();
             }
             Err(error) => self.last_error = Some(format!("invalid pipe payload: {error}")),
         }
-        true
+        self.bar_changed()
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -223,6 +236,25 @@ impl State {
             sessions.extend(self.store.detected(live));
         }
         order(sessions, self.config().all_sessions)
+    }
+
+    /// Whether a redraw is needed. The bar only changes with its error text, counts or blink
+    /// phase; the picker is always redrawn.
+    fn bar_changed(&mut self) -> bool {
+        if self.config().mode != Mode::Bar {
+            return true;
+        }
+        let error = self
+            .last_error
+            .clone()
+            .or_else(|| self.warnings.first().cloned());
+        let hide = self.config().blink_waiting && self.blink_hidden;
+        let view = (error, Counts::from_sessions(&self.sessions()), hide);
+        if self.last_bar_view.as_ref() == Some(&view) {
+            return false;
+        }
+        self.last_bar_view = Some(view);
+        true
     }
 
     fn bind_open_key(&self) {
@@ -424,10 +456,30 @@ impl State {
     }
 
     fn init_status_dir(&mut self) {
+        // The environment is only needed without `status_dir`, or to expand its `~`. Reading it
+        // right after `Granted` can panic in the host shim, so it waits for the next timer.
+        let needs_env = self
+            .config()
+            .status_dir
+            .as_ref()
+            .is_none_or(|dir| dir.starts_with("~"));
+        if needs_env {
+            self.env_pending = true;
+            self.arm_timer();
+        } else {
+            self.resolve_status_dir(&BTreeMap::new());
+        }
+    }
+
+    fn init_status_dir_from_env(&mut self) {
         // get_session_environment_variables: needs ReadSessionEnvironmentVariables.
         let env = get_session_environment_variables();
         self.home = env.get("HOME").cloned();
-        self.status_dir = resolve_status_dir(self.config(), &env);
+        self.resolve_status_dir(&env);
+    }
+
+    fn resolve_status_dir(&mut self, env: &BTreeMap<String, String>) {
+        self.status_dir = resolve_status_dir(self.config(), env);
         match &self.status_dir {
             // change_host_folder: needs FullHdAccess; answered by HostFolderChanged.
             Some(dir) => change_host_folder(dir.clone()),
@@ -465,6 +517,11 @@ impl State {
             }
         }
     }
+}
+
+/// A record without a session is not a status record.
+fn is_valid_record(record: &StatusRecord) -> bool {
+    !record.zellij_session.is_empty()
 }
 
 /// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
