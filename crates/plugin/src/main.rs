@@ -33,6 +33,9 @@ struct State {
     store: Store,
     /// `None` until the first `SessionUpdate`; pruning waits for it.
     live: Option<Vec<LiveSession>>,
+    /// Set once `get_session_list` has returned a full scan. Before that `SessionUpdate`
+    /// lists the current session only, so pruning (and file removal) must wait.
+    session_list_complete: bool,
     picker: Picker,
     last_error: Option<String>,
     /// Non-fatal problem from the last status directory read.
@@ -114,7 +117,7 @@ impl ZellijPlugin for State {
                 }
                 self.init_status_dir();
                 self.bind_open_key();
-                refresh_session_list();
+                self.refresh_session_list();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -143,7 +146,7 @@ impl ZellijPlugin for State {
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
-                    refresh_session_list();
+                    self.refresh_session_list();
                     if self.host_folder_ready {
                         self.poll_status_files();
                     } else if let Some(dir) = &self.status_dir {
@@ -503,9 +506,25 @@ impl State {
         }
     }
 
+    /// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
+    /// would list the current session only and live sessions elsewhere would look gone.
+    fn refresh_session_list(&mut self) {
+        // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
+        if let Ok(snapshot) = get_session_list() {
+            self.live = Some(
+                snapshot
+                    .live_sessions
+                    .iter()
+                    .map(host::to_live_session)
+                    .collect(),
+            );
+            self.session_list_complete = true;
+        }
+    }
+
     fn prune(&mut self) {
         let stale_after = self.config().stale_after_secs;
-        let Some(live) = &self.live else {
+        let Some(live) = self.live.as_ref().filter(|_| self.session_list_complete) else {
             return;
         };
         let removed = self.store.prune(live, host::unix_now(), stale_after);
@@ -520,11 +539,4 @@ impl State {
 /// A record without a session is not a status record.
 fn is_valid_record(record: &StatusRecord) -> bool {
     !record.zellij_session.is_empty()
-}
-
-/// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
-/// would list the current session only and live sessions elsewhere would look gone.
-fn refresh_session_list() {
-    // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
-    let _ = get_session_list();
 }
