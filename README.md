@@ -395,7 +395,7 @@ sh tests/hook/test_hook.sh
 sh tests/e2e/run.sh
 ```
 
-The end-to-end test runs in isolation: its own `HOME`, cache, socket directory and session name, so it does not touch your Zellij sessions, permissions or status files. It attaches a client through a pseudo-terminal (`script`), loads the plugin from a layout with pre-granted permissions, and passes when the plugin deletes the status file of a long-gone session and keeps the live one. Pass a path to test another build: `sh tests/e2e/run.sh path/to/claude-sessions.wasm`. The hook and end-to-end tests are not run in CI.
+The end-to-end test runs in isolation: its own `HOME`, cache, socket directory and session name, so it does not touch your Zellij sessions, permissions or status files. It attaches a client through a pseudo-terminal (`script`), loads the plugin from a layout with pre-granted permissions, and passes when the plugin deletes the status file of a long-gone session and keeps the live one. Pass a path to test another build: `sh tests/e2e/run.sh path/to/claude-sessions.wasm`. The hook test runs in CI; the end-to-end test does not.
 
 To try a local build in your running Zellij:
 

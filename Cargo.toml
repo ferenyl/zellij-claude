@@ -8,9 +8,12 @@ edition = "2021"
 license-file = "LICENSE"
 repository = "https://github.com/Ferenyl/zellij-claude"
 
-# Smallest wasm: ~0.94 MB instead of ~2 MB. wasm-opt gains nothing on top of this.
+# Smallest wasm: ~0.98 MB instead of ~2 MB. wasm-opt gains nothing on top of this.
 [profile.release]
 opt-level = "z"
 lto = true
 codegen-units = 1
 strip = true
+# Arithmetic bugs panic (and abort) instead of wrapping silently; costs ~22 KB.
+panic = "abort"
+overflow-checks = true
