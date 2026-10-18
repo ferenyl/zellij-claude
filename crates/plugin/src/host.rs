@@ -14,6 +14,7 @@ use zellij_tile::prelude::*;
 /// `change_host_folder` remaps this WASI mount to the status directory.
 const HOST_MOUNT: &str = "/host";
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
+const LAYER_FILE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
 const MAX_STATUS_FILES: usize = 500;
 
 pub fn unix_now() -> u64 {
@@ -72,8 +73,35 @@ pub fn remove_status_file(zellij_session: &str, pane_id: u32) {
 
 pub fn write_layer_states(zellij_pid: u32, layers: &LayerStates) -> Result<(), String> {
     let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
-    std::fs::write(path, encode_layers(layers))
+    // Written to a temp name and renamed, so the picker never reads a half-written file.
+    let tmp = Path::new(HOST_MOUNT).join(format!("{}.tmp", layer_file_name(zellij_pid)));
+    std::fs::write(&tmp, encode_layers(layers))
+        .and_then(|()| std::fs::rename(&tmp, path))
         .map_err(|e| format!("cannot write layer state: {e}"))
+}
+
+/// Removes layer state files of Zellij processes that are long gone.
+pub fn remove_old_layer_files() {
+    let Ok(entries) = std::fs::read_dir(Path::new(HOST_MOUNT)) else {
+        return;
+    };
+    let now = SystemTime::now();
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !(name.starts_with("floating-") && name.ends_with(".state")) {
+            continue;
+        }
+        let old = entry
+            .metadata()
+            .and_then(|m| m.modified())
+            .ok()
+            .and_then(|modified| now.duration_since(modified).ok())
+            .is_some_and(|age| age.as_secs() > LAYER_FILE_MAX_AGE_SECS);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// `None` if the bar has not written the file (no bar in the layout) or it is unreadable.
@@ -161,8 +189,15 @@ pub fn to_coordinates(pane: &HiddenPane) -> Option<(PaneId, FloatingPaneCoordina
 }
 
 pub fn to_key_press(key: &KeyWithModifier) -> Option<KeyPress> {
+    let shift = key.key_modifiers.contains(&KeyModifier::Shift);
+    if key.key_modifiers.contains(&KeyModifier::Super) {
+        return None;
+    }
     let mapped = match key.bare_key {
+        // Kitty protocol sends `Char('j')` + Shift where legacy terminals send `Char('J')`.
+        BareKey::Char(c) if shift && c.is_lowercase() => Key::Char(c.to_uppercase().next()?),
         BareKey::Char(c) => Key::Char(c),
+        _ if shift => return None,
         BareKey::Up => Key::Up,
         BareKey::Down => Key::Down,
         BareKey::Left => Key::Left,

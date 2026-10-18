@@ -15,18 +15,27 @@ const REVERSE: &str = "\u{1b}[7m";
 const YELLOW: &str = "\u{1b}[33m";
 
 pub fn print_lines(lines: &[Line], cols: usize) {
-    for line in lines {
-        let styled = match line.kind {
+    let rendered: Vec<String> = lines
+        .iter()
+        .map(|line| match line.kind {
             LineKind::Header => format!("{BOLD}{}{RESET}", line.text),
-            LineKind::Row { selected: true, .. } => {
-                format!("{REVERSE}{}{RESET}", pad(&line.text, cols))
+            LineKind::Row {
+                selected: true,
+                live,
+                ..
+            } => {
+                let dim = if live { "" } else { DIM };
+                format!("{REVERSE}{dim}{}{RESET}", pad(&line.text, cols))
             }
-            LineKind::Help => format!("{DIM}{}{RESET}", line.text),
+            LineKind::Row { live: false, .. } | LineKind::Help => {
+                format!("{DIM}{}{RESET}", line.text)
+            }
             LineKind::Warning => format!("{YELLOW}{}{RESET}", line.text),
             _ => line.text.clone(),
-        };
-        println!("{styled}");
-    }
+        })
+        .collect();
+    // print! without a trailing newline: a line feed on the last row would scroll row 1 away.
+    print!("{}", rendered.join("\n"));
 }
 
 /// Hides the picker and brings back the floating panes it hid while open.

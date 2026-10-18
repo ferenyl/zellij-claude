@@ -35,6 +35,7 @@ fn session(
         cwd: Some(cwd.into()),
         claude_session_id: None,
         updated_at: 0,
+        is_live: true,
         is_current_session: current,
         tab_position: Some(pane as usize),
         tab_name: Some(tab.into()),

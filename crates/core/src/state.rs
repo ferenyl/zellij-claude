@@ -46,6 +46,8 @@ pub struct ClaudeSession {
     pub cwd: Option<String>,
     pub claude_session_id: Option<String>,
     pub updated_at: u64,
+    /// The Zellij session is running; otherwise it is gone, renamed or only resurrectable.
+    pub is_live: bool,
     pub is_current_session: bool,
     pub tab_position: Option<usize>,
     pub tab_name: Option<String>,
@@ -216,6 +218,7 @@ fn join(live: &[LiveSession], zellij_session: &str, pane_id: u32, entry: &Entry)
         cwd: entry.cwd.clone(),
         claude_session_id: entry.claude_session_id.clone(),
         updated_at: entry.updated_at,
+        is_live: session.is_some(),
         is_current_session: session.is_some_and(|s| s.is_current),
         tab_position: pane.map(|p| p.tab_position),
         tab_name,
