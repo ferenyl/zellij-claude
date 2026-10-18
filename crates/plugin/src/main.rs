@@ -79,18 +79,15 @@ impl ZellijPlugin for State {
         self.keymap = keymap;
         self.config = config;
 
-        // The bar never focuses, hides or switches anything, so it skips ChangeApplicationState.
+        // The same set in both modes: Zellij keeps one permission entry per plugin URL and
+        // overwrites it with whatever an instance requests, so differing sets would prompt again.
         let mut permissions = vec![
             PermissionType::ReadApplicationState,
+            PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::FullHdAccess,
+            PermissionType::ReadSessionEnvironmentVariables,
         ];
-        if self.config().mode == Mode::Picker {
-            permissions.push(PermissionType::ChangeApplicationState);
-        }
-        if self.config().needs_session_env() {
-            permissions.push(PermissionType::ReadSessionEnvironmentVariables);
-        }
         if self.config().bind_open_key.is_some() {
             permissions.push(PermissionType::Reconfigure);
         }

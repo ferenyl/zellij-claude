@@ -92,16 +92,16 @@ pub enum Action {
     JumpWaiting,
 }
 
-impl Default for Keymap {
-    fn default() -> Self {
-        Self::from_config(&Config::default()).0
-    }
-}
-
 /// Configured picker key bindings.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Keymap {
     bindings: Vec<(KeyPress, Action)>,
+}
+
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::from_config(&Config::default()).0
+    }
 }
 
 impl Keymap {

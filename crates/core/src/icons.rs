@@ -1,12 +1,6 @@
 use crate::config::{Config, IconSet};
 use crate::hook_map::SessionState;
 
-impl Default for Icons {
-    fn default() -> Self {
-        Self::from_config(&Config::default())
-    }
-}
-
 /// Resolved icons: the configured set with per-icon overrides applied.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Icons {
@@ -14,6 +8,12 @@ pub struct Icons {
     pub waiting: String,
     pub idle: String,
     pub session: String,
+}
+
+impl Default for Icons {
+    fn default() -> Self {
+        Self::from_config(&Config::default())
+    }
 }
 
 impl Icons {

@@ -546,4 +546,14 @@ mod tests {
             Some(PathBuf::from("/home/u/status"))
         );
     }
+
+    #[test]
+    fn session_env_is_needed_without_status_dir_or_with_tilde() {
+        let mut config = Config::default();
+        assert!(config.needs_session_env());
+        config.status_dir = Some(PathBuf::from("~/x"));
+        assert!(config.needs_session_env());
+        config.status_dir = Some(PathBuf::from("/abs/x"));
+        assert!(!config.needs_session_env());
+    }
 }

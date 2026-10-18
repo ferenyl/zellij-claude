@@ -312,10 +312,10 @@ The plugin deletes the status files of removed entries.
 | Permission | Why |
 |------------|-----|
 | `ReadApplicationState` | Tabs, panes and sessions |
-| `ChangeApplicationState` | Focus panes, switch sessions, hide the picker (picker only, not requested by the bar) |
+| `ChangeApplicationState` | Focus panes, switch sessions, hide the picker |
 | `ReadCliPipes` | Receive `zellij pipe` messages from the hook |
 | `FullHdAccess` | Read and clean up the status directory |
-| `ReadSessionEnvironmentVariables` | Find `HOME` / `XDG_CACHE_HOME` for the default status directory (not requested with an absolute `status_dir`) |
+| `ReadSessionEnvironmentVariables` | Find `HOME` / `XDG_CACHE_HOME` for the default status directory |
 | `Reconfigure` | Only with `bind_open_key` |
 
 ## Troubleshooting
