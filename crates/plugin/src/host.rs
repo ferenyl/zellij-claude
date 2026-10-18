@@ -13,9 +13,9 @@ use zellij_tile::prelude::*;
 
 /// `change_host_folder` remaps this WASI mount to the status directory.
 const HOST_MOUNT: &str = "/host";
-/// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
 /// Records stamped further ahead than this are ignored.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
+/// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
 const MAX_STATUS_FILES: usize = 500;
 
 pub fn unix_now() -> u64 {

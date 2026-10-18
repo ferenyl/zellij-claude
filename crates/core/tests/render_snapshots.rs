@@ -153,6 +153,7 @@ fn bar_options(icons: &Icons, orientation: Orientation) -> BarOptions<'_> {
         vertical_align: VerticalAlign::Top,
         show_zero: true,
         hide_waiting_icon: false,
+        issue: false,
     }
 }
 

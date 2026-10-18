@@ -5,7 +5,7 @@ mod picker;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts, Span};
+use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts};
 use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
 use claude_sessions_core::floating::{
     became_visible, moved_tab, panes_to_isolate, record_layers, shown_picker_position, Isolation,
@@ -16,7 +16,7 @@ use claude_sessions_core::keys::{open_picker_binding, Keymap};
 use claude_sessions_core::list::{order, Command, Picker, RowOptions};
 use claude_sessions_core::state::{ClaudeSession, LiveSession, Store};
 use claude_sessions_core::status_file::StatusRecord;
-use claude_sessions_core::truncate::{truncate_end, width};
+use claude_sessions_core::truncate::truncate_end;
 use zellij_tile::prelude::*;
 
 const PIPE_NAME: &str = "claude-status";
@@ -67,8 +67,6 @@ struct State {
 }
 
 /// Error text, counts, whether the waiting icon is hidden and whether to show the issue marker.
-const ISSUE_MARKER_WIDTH: usize = 2;
-
 type BarView = (Option<String>, Counts, bool, bool);
 
 register_plugin!(State);
@@ -126,7 +124,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                self.last_error = Some("permissions denied: remove the entry in ~/.cache/zellij/permissions.kdl and reload".into());
+                self.last_error = Some("permissions denied: remove this plugin's entry in Zellij's permissions.kdl and reload".into());
                 true
             }
             Event::HostFolderChanged(_) => {
@@ -139,7 +137,7 @@ impl ZellijPlugin for State {
             }
             Event::FailedToChangeHostFolder(error) => {
                 // Usually the directory does not exist until the hook first runs; retried on the timer.
-                self.last_error = Some(format!(
+                self.poll_warning = Some(format!(
                     "waiting for status dir ({}), retrying",
                     error.unwrap_or_else(|| "unknown error".into())
                 ));
@@ -249,10 +247,7 @@ impl State {
 
     /// What the bar shows: error text, counts and whether the waiting icon is hidden.
     fn bar_view(&self) -> BarView {
-        let error = self
-            .last_error
-            .clone()
-            .or_else(|| self.warnings.first().cloned());
+        let error = self.last_error.clone();
         let counts = Counts::from_sessions(&self.sessions());
         let hide = self.config().blink_waiting && self.blink_hidden && counts.waiting > 0;
         (error, counts, hide, self.has_issue())
@@ -260,7 +255,10 @@ impl State {
 
     /// A non-fatal problem; the bar shows a marker after the counts.
     fn has_issue(&self) -> bool {
-        self.pipe_error.is_some() || self.poll_warning.is_some() || self.layer_warning.is_some()
+        !self.warnings.is_empty()
+            || self.pipe_error.is_some()
+            || self.poll_warning.is_some()
+            || self.layer_warning.is_some()
     }
 
     /// Whether a redraw is needed: the bar differs from what `render_bar` last drew.
@@ -296,11 +294,7 @@ impl State {
 
     fn render_bar(&mut self, rows: usize, cols: usize) {
         self.last_bar_view = Some(self.bar_view());
-        if let Some(error) = self
-            .last_error
-            .as_deref()
-            .or(self.warnings.first().map(String::as_str))
-        {
+        if let Some(error) = self.last_error.as_deref() {
             print!("{}", truncate_end(&format!("! {error}"), cols));
             return;
         }
@@ -313,19 +307,9 @@ impl State {
             vertical_align: config.vertical_align,
             show_zero: config.show_zero,
             hide_waiting_icon: config.blink_waiting && self.blink_hidden,
+            issue: self.has_issue(),
         };
-        let mut lines = core_bar::render(counts, &options, rows, cols);
-        if self.has_issue() {
-            if let Some(last) = lines.last_mut() {
-                let used: usize = last.iter().map(|span| width(&span.text)).sum();
-                if used + ISSUE_MARKER_WIDTH <= cols {
-                    last.push(Span {
-                        text: " !".into(),
-                        state: None,
-                    });
-                }
-            }
-        }
+        let lines = core_bar::render(counts, &options, rows, cols);
         bar::print_lines(&lines, config);
     }
 
@@ -366,9 +350,8 @@ impl State {
         if self.config().mode != Mode::Bar || !self.host_folder_ready {
             return;
         }
-        if let Err(error) = host::write_layer_states(get_plugin_ids().zellij_pid, &self.layers) {
-            self.last_error = Some(error);
-        }
+        self.layer_warning =
+            host::write_layer_states(get_plugin_ids().zellij_pid, &self.layers).err();
     }
 
     /// A hidden plugin gets no `PaneUpdate`/`TabUpdate`, so the next one after showing
