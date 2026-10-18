@@ -72,7 +72,7 @@ pub struct Store {
 impl Store {
     /// Applies one update (pipe message or status file). The newest `updated_at` wins;
     /// on a tie the update applied last wins, except that a tool event never replaces
-    /// idle from the same second: pipe messages are sent in the background and can
+    /// idle or waiting from the same second: pipe messages are sent in the background and can
     /// arrive after the `Stop` that followed them.
     pub fn apply(&mut self, record: StatusRecord) {
         let Some(change) = event_to_state(&record.hook_event, record.notification_type.as_deref())
@@ -85,10 +85,10 @@ impl Store {
             "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
         );
         if is_tool_event
-            && self
-                .entries
-                .get(&key)
-                .is_some_and(|e| e.updated_at == record.updated_at && e.state == SessionState::Idle)
+            && self.entries.get(&key).is_some_and(|e| {
+                e.updated_at == record.updated_at
+                    && matches!(e.state, SessionState::Idle | SessionState::Waiting)
+            })
         {
             return;
         }
@@ -307,6 +307,19 @@ mod tests {
         store.apply(record("work", 1, "PreToolUse", 10));
 
         assert_eq!(states(&store), vec![("work".into(), 1, SessionState::Idle)]);
+    }
+
+    #[test]
+    fn tool_event_does_not_replace_waiting_from_same_second() {
+        let mut store = Store::default();
+
+        store.apply(record("work", 1, "PermissionRequest", 10));
+        store.apply(record("work", 1, "PreToolUse", 10));
+
+        assert_eq!(
+            states(&store),
+            vec![("work".into(), 1, SessionState::Waiting)]
+        );
     }
 
     #[test]

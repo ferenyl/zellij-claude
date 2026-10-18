@@ -118,7 +118,20 @@ pub struct Config {
     pub plugin_location: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::defaults(Mode::Picker)
+    }
+}
+
 impl Config {
+    /// The session environment is only read without `status_dir`, or to expand its `~`.
+    pub fn needs_session_env(&self) -> bool {
+        self.status_dir
+            .as_ref()
+            .is_none_or(|dir| dir.starts_with("~"))
+    }
+
     /// Defaults for the given mode (`all_sessions` differs between picker and bar).
     pub fn defaults(mode: Mode) -> Self {
         Self {

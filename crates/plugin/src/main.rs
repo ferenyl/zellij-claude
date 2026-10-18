@@ -23,9 +23,10 @@ const PIPE_NAME: &str = "claude-status";
 
 #[derive(Default)]
 struct State {
-    config: Option<Config>,
-    keymap: Option<Keymap>,
-    icons: Option<Icons>,
+    /// Defaults until `load` has parsed the configuration.
+    config: Config,
+    keymap: Keymap,
+    icons: Icons,
     warnings: Vec<String>,
     home: Option<String>,
     status_dir: Option<PathBuf>,
@@ -74,17 +75,22 @@ impl ZellijPlugin for State {
             .chain(&key_warnings)
             .map(ToString::to_string)
             .collect();
-        self.icons = Some(Icons::from_config(&config));
-        self.keymap = Some(keymap);
-        self.config = Some(config);
+        self.icons = Icons::from_config(&config);
+        self.keymap = keymap;
+        self.config = config;
 
+        // The bar never focuses, hides or switches anything, so it skips ChangeApplicationState.
         let mut permissions = vec![
             PermissionType::ReadApplicationState,
-            PermissionType::ChangeApplicationState,
             PermissionType::ReadCliPipes,
             PermissionType::FullHdAccess,
-            PermissionType::ReadSessionEnvironmentVariables,
         ];
+        if self.config().mode == Mode::Picker {
+            permissions.push(PermissionType::ChangeApplicationState);
+        }
+        if self.config().needs_session_env() {
+            permissions.push(PermissionType::ReadSessionEnvironmentVariables);
+        }
         if self.config().bind_open_key.is_some() {
             permissions.push(PermissionType::Reconfigure);
         }
@@ -222,11 +228,11 @@ impl ZellijPlugin for State {
 
 impl State {
     fn config(&self) -> &Config {
-        self.config.as_ref().expect("config is set in load")
+        &self.config
     }
 
     fn icons(&self) -> &Icons {
-        self.icons.as_ref().expect("icons are set in load")
+        &self.icons
     }
 
     fn sessions(&self) -> Vec<ClaudeSession> {
@@ -309,7 +315,7 @@ impl State {
             return false;
         };
         let sessions = self.sessions();
-        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        let keymap = &self.keymap;
         match self.picker.handle_key(press, keymap, &sessions) {
             Command::None => false,
             Command::Redraw => true,
@@ -439,15 +445,15 @@ impl State {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.last_error.clone());
         warnings.extend(self.poll_warning.clone());
-        let config = self.config.as_ref().expect("config is set in load");
-        let icons = self.icons.as_ref().expect("icons are set in load");
+        let config = &self.config;
+        let icons = &self.icons;
         let options = RowOptions {
             icons,
             show_state_text: config.show_state_text,
             show_cwd: config.show_cwd,
             home: self.home.as_deref(),
         };
-        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        let keymap = &self.keymap;
         let lines = self
             .picker
             .render(&sessions, keymap, &options, &warnings, rows, cols);
@@ -457,12 +463,7 @@ impl State {
     fn init_status_dir(&mut self) {
         // The environment is only needed without `status_dir`, or to expand its `~`. Reading it
         // right after `Granted` can panic in the host shim, so it waits for the next `SessionUpdate`.
-        let needs_env = self
-            .config()
-            .status_dir
-            .as_ref()
-            .is_none_or(|dir| dir.starts_with("~"));
-        if needs_env {
+        if self.config().needs_session_env() {
             self.env_pending = true;
         } else {
             self.resolve_status_dir(&BTreeMap::new());
