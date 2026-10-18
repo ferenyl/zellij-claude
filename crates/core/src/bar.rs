@@ -49,6 +49,8 @@ pub struct BarOptions<'a> {
     /// Blink "off" phase: the waiting icon is replaced by blanks of the same width,
     /// only while at least one session is waiting.
     pub hide_waiting_icon: bool,
+    /// A non-fatal problem: the total count gets a trailing `!`.
+    pub issue: bool,
 }
 
 /// Renders the bar as lines of spans. Never more than `rows` lines or `cols` cells per line.
@@ -98,8 +100,9 @@ pub fn render(counts: Counts, options: &BarOptions, rows: usize, cols: usize) ->
 
 fn items(counts: Counts, options: &BarOptions) -> Vec<Span> {
     let icons = options.icons;
+    let marker = if options.issue { " !" } else { "" };
     let mut items = vec![Span {
-        text: format!("{} {}", icons.session, counts.total),
+        text: format!("{} {}{marker}", icons.session, counts.total),
         state: None,
     }];
     for (state, count) in [
@@ -184,6 +187,7 @@ mod tests {
             vertical_align: VerticalAlign::Top,
             show_zero: true,
             hide_waiting_icon: false,
+            issue: false,
         }
     }
 
@@ -342,5 +346,18 @@ mod tests {
             )),
             vec!["◆ "]
         );
+    }
+
+    #[test]
+    fn issue_marks_the_total_count() {
+        let icons = icons();
+        let mut opts = options(&icons, Orientation::Horizontal);
+        opts.issue = true;
+
+        let lines = render(counts(), &opts, 1, 40);
+        let narrow = render(counts(), &opts, 1, 6);
+
+        assert!(texts(&lines)[0].starts_with(&format!("{} 3 !", icons.session)));
+        assert!(texts(&narrow)[0].ends_with('!'));
     }
 }

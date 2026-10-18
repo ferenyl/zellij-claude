@@ -38,7 +38,12 @@ struct State {
     /// lists the current session only, so pruning (and file removal) must wait.
     session_list_complete: bool,
     picker: Picker,
+    /// Setup problem (permissions, status dir); the only error that replaces the bar counts.
     last_error: Option<String>,
+    /// Invalid payload from the last pipe message; cleared by a valid pipe or a good poll.
+    pipe_error: Option<String>,
+    /// Layer state file could not be written.
+    layer_warning: Option<String>,
     /// Non-fatal problem from the last status directory read.
     poll_warning: Option<String>,
     /// Seconds since the status directory was last read.
@@ -72,7 +77,8 @@ struct State {
     last_bar_view: Option<BarView>,
 }
 
-type BarView = (Option<String>, Counts, bool);
+/// Error text, counts, whether the waiting icon is hidden and whether to show the issue marker.
+type BarView = (Option<String>, Counts, bool, bool);
 
 register_plugin!(State);
 
@@ -133,7 +139,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                self.last_error = Some("permissions denied".into());
+                self.last_error = Some("permissions denied: remove this plugin's entry in Zellij's permissions.kdl and reload".into());
                 true
             }
             Event::HostFolderChanged(_) => {
@@ -149,7 +155,7 @@ impl ZellijPlugin for State {
             }
             Event::FailedToChangeHostFolder(error) => {
                 // Usually the directory does not exist until the hook first runs; retried on the timer.
-                self.last_error = Some(format!(
+                self.poll_warning = Some(format!(
                     "waiting for status dir ({}), retrying",
                     error.unwrap_or_else(|| "unknown error".into())
                 ));
@@ -235,10 +241,11 @@ impl ZellijPlugin for State {
                 if !is_valid_record(&record) {
                     return false;
                 }
+                self.pipe_error = None;
                 self.store.apply(record);
                 self.prune();
             }
-            Err(error) => self.last_error = Some(format!("invalid pipe payload: {error}")),
+            Err(error) => self.pipe_error = Some(format!("invalid pipe payload: {error}")),
         }
         self.bar_changed()
     }
@@ -271,13 +278,18 @@ impl State {
 
     /// What the bar shows: error text, counts and whether the waiting icon is hidden.
     fn bar_view(&self) -> BarView {
-        let error = self
-            .last_error
-            .clone()
-            .or_else(|| self.warnings.first().cloned());
+        let error = self.last_error.clone();
         let counts = Counts::from_sessions(&self.sessions());
         let hide = self.config().blink_waiting && self.blink_hidden && counts.waiting > 0;
-        (error, counts, hide)
+        (error, counts, hide, self.has_issue())
+    }
+
+    /// A non-fatal problem; the bar shows a marker after the counts.
+    fn has_issue(&self) -> bool {
+        !self.warnings.is_empty()
+            || self.pipe_error.is_some()
+            || self.poll_warning.is_some()
+            || self.layer_warning.is_some()
     }
 
     /// Whether a redraw is needed: the bar differs from what `render_bar` last drew.
@@ -313,11 +325,7 @@ impl State {
 
     fn render_bar(&mut self, rows: usize, cols: usize) {
         self.last_bar_view = Some(self.bar_view());
-        if let Some(error) = self
-            .last_error
-            .as_deref()
-            .or(self.warnings.first().map(String::as_str))
-        {
+        if let Some(error) = self.last_error.as_deref() {
             print!("{}", truncate_end(&format!("! {error}"), cols));
             return;
         }
@@ -330,6 +338,7 @@ impl State {
             vertical_align: config.vertical_align,
             show_zero: config.show_zero,
             hide_waiting_icon: config.blink_waiting && self.blink_hidden,
+            issue: self.has_issue(),
         };
         let lines = core_bar::render(counts, &options, rows, cols);
         bar::print_lines(&lines, config);
@@ -384,11 +393,8 @@ impl State {
         if self.config().mode != Mode::Bar || !self.host_folder_ready {
             return;
         }
-        // Not a bar error: the picker falls back to "hidden" without this file.
-        if let Err(error) = host::write_layer_states(self.zellij_pid, self.plugin_id, &self.layers)
-        {
-            eprintln!("{error}");
-        }
+        self.layer_warning =
+            host::write_layer_states(self.zellij_pid, self.plugin_id, &self.layers).err();
     }
 
     /// A hidden plugin gets no `PaneUpdate`/`TabUpdate`, so the next one after showing
@@ -487,6 +493,8 @@ impl State {
         let mut warnings = self.warnings.clone();
         warnings.extend(self.last_error.clone());
         warnings.extend(self.jump_warning.clone());
+        warnings.extend(self.pipe_error.clone());
+        warnings.extend(self.layer_warning.clone());
         warnings.extend(self.poll_warning.clone());
         let config = &self.config;
         let icons = &self.icons;
@@ -540,10 +548,11 @@ impl State {
                     (false, 0) => None,
                     (false, n) => Some(format!("{n} unreadable status file(s) ignored")),
                 };
+                self.pipe_error = None;
                 self.store.apply_snapshot(files.records, !files.truncated);
                 self.prune();
             }
-            Err(error) => self.last_error = Some(error),
+            Err(error) => self.poll_warning = Some(error),
         }
     }
 
@@ -576,6 +585,8 @@ impl State {
 }
 
 /// A record without a session is not a status record.
+/// A `updated_at` far ahead would block every later update of the same key.
 fn is_valid_record(record: &StatusRecord) -> bool {
     !record.zellij_session.is_empty()
+        && record.updated_at <= host::unix_now() + host::MAX_CLOCK_SKEW_SECS
 }
