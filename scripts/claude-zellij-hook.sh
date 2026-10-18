@@ -49,7 +49,7 @@ main() {
         }' 2>/dev/null) || return 0
 
     notification=$(printf '%s' "$input" | jq -r '.notification_type // empty' 2>/dev/null)
-    prev_event= prev_notification=
+    prev_event='' prev_notification=''
     if [ -r "$file" ]; then
         prev=$(jq -r '[.hook_event // "", .notification_type // ""] | join("\t")' "$file" 2>/dev/null)
         prev_event=${prev%%	*}
