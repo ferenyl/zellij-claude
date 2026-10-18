@@ -499,7 +499,7 @@ impl State {
                     (false, 0) => None,
                     (false, n) => Some(format!("{n} unreadable status file(s) ignored")),
                 };
-                self.store.apply_snapshot(files.records);
+                self.store.apply_snapshot(files.records, !files.truncated);
                 self.prune();
             }
             Err(error) => self.last_error = Some(error),
@@ -524,9 +524,7 @@ impl State {
 
     fn prune(&mut self) {
         let stale_after = self.config().stale_after_secs;
-        let Some(live) = self.live.as_ref().filter(|_| self.session_list_complete) else {
-            return;
-        };
+        let live = self.live.as_deref().filter(|_| self.session_list_complete);
         let removed = self.store.prune(live, host::unix_now(), stale_after);
         if self.host_folder_ready {
             for (zellij_session, pane_id) in removed {
