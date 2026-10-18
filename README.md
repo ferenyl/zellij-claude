@@ -157,8 +157,8 @@ All values are strings, as Zellij passes them. Booleans accept `true`/`false` (a
 | `vertical_align` | `top` | Bar placement: `top` or `bottom` |
 | `show_zero` | `true` | Show states with a zero count in the bar |
 | `blink_waiting` | `false` | Blink the waiting icon in the bar while a session is waiting |
-| `status_dir` | `$XDG_CACHE_HOME/claude-zellij` | Status file directory; must match the hook's directory. `~` is expanded |
-| `poll_interval_secs` | `2` | How often status files are re-read |
+| `status_dir` | `$XDG_CACHE_HOME/claude-zellij` | Status file directory (absolute or `~`-relative); must match the hook's directory |
+| `poll_interval_secs` | `2` | How often status files are re-read (minimum `0.2`) |
 | `stale_after_secs` | `3600` | Drop entries of Zellij sessions that are gone after this many seconds |
 | `key_up` | `k,Up` | Picker: move up |
 | `key_down` | `j,Down` | Picker: move down |

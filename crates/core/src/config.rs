@@ -197,19 +197,19 @@ impl Config {
                 "show_zero" => parse_bool(value).map(|v| config.show_zero = v),
                 "blink_waiting" => parse_bool(value).map(|v| config.blink_waiting = v),
                 "status_dir" => {
-                    if value.is_empty() {
-                        Err("a directory path")
+                    if !(value.starts_with('/') || value == "~" || value.starts_with("~/")) {
+                        Err("an absolute path or ~/path")
                     } else {
                         config.status_dir = Some(PathBuf::from(value));
                         Ok(())
                     }
                 }
                 "poll_interval_secs" => match value.parse::<f64>() {
-                    Ok(v) if v.is_finite() && v > 0.0 => {
+                    Ok(v) if v.is_finite() && v >= MIN_POLL_INTERVAL_SECS => {
                         config.poll_interval_secs = v;
                         Ok(())
                     }
-                    _ => Err("a positive number"),
+                    _ => Err("a number of at least 0.2"),
                 },
                 "stale_after_secs" => value
                     .parse::<u64>()
@@ -253,6 +253,9 @@ impl Config {
         (config, warnings)
     }
 }
+
+/// Shorter intervals would start a timer storm in every bar instance.
+const MIN_POLL_INTERVAL_SECS: f64 = 0.2;
 
 /// Resolves the status file directory: explicit config, else `$XDG_CACHE_HOME/claude-zellij`,
 /// else `$HOME/.cache/claude-zellij`. `env` is the Zellij session environment.
@@ -532,5 +535,16 @@ mod tests {
             resolve_status_dir(&config, &env),
             Some(PathBuf::from("/home/u/status"))
         );
+    }
+
+    #[test]
+    fn too_short_poll_interval_and_relative_status_dir_warn() {
+        let (config, warnings) = Config::parse(&raw(&[
+            ("poll_interval_secs", "0.01"),
+            ("status_dir", "cache/x"),
+        ]));
+
+        assert_eq!(config, Config::defaults(Mode::Picker));
+        assert_eq!(warnings.len(), 2);
     }
 }

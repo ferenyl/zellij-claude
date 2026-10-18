@@ -5,7 +5,7 @@ mod picker;
 use std::collections::BTreeMap;
 use std::path::PathBuf;
 
-use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts};
+use claude_sessions_core::bar::{self as core_bar, BarOptions, Counts, Span};
 use claude_sessions_core::config::{resolve_status_dir, Config, Mode};
 use claude_sessions_core::floating::{
     became_visible, moved_tab, panes_to_isolate, record_layers, shown_picker_position, Isolation,
@@ -16,7 +16,7 @@ use claude_sessions_core::keys::{open_picker_binding, Keymap};
 use claude_sessions_core::list::{order, Command, Picker, RowOptions};
 use claude_sessions_core::state::{ClaudeSession, LiveSession, Store};
 use claude_sessions_core::status_file::StatusRecord;
-use claude_sessions_core::truncate::truncate_end;
+use claude_sessions_core::truncate::{truncate_end, width};
 use zellij_tile::prelude::*;
 
 const PIPE_NAME: &str = "claude-status";
@@ -34,7 +34,12 @@ struct State {
     /// `None` until the first `SessionUpdate`; pruning waits for it.
     live: Option<Vec<LiveSession>>,
     picker: Picker,
+    /// Setup problem (permissions, status dir); the only error that replaces the bar counts.
     last_error: Option<String>,
+    /// Invalid payload from the last pipe message; cleared by a valid pipe or a good poll.
+    pipe_error: Option<String>,
+    /// Layer state file could not be written.
+    layer_warning: Option<String>,
     /// Non-fatal problem from the last status directory read.
     poll_warning: Option<String>,
     /// Seconds since the status directory was last read.
@@ -61,7 +66,10 @@ struct State {
     last_bar_view: Option<BarView>,
 }
 
-type BarView = (Option<String>, Counts, bool);
+/// Error text, counts, whether the waiting icon is hidden and whether to show the issue marker.
+const ISSUE_MARKER_WIDTH: usize = 2;
+
+type BarView = (Option<String>, Counts, bool, bool);
 
 register_plugin!(State);
 
@@ -118,7 +126,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
-                self.last_error = Some("permissions denied".into());
+                self.last_error = Some("permissions denied: remove the entry in ~/.cache/zellij/permissions.kdl and reload".into());
                 true
             }
             Event::HostFolderChanged(_) => {
@@ -204,10 +212,11 @@ impl ZellijPlugin for State {
                 if !is_valid_record(&record) {
                     return false;
                 }
+                self.pipe_error = None;
                 self.store.apply(record);
                 self.prune();
             }
-            Err(error) => self.last_error = Some(format!("invalid pipe payload: {error}")),
+            Err(error) => self.pipe_error = Some(format!("invalid pipe payload: {error}")),
         }
         self.bar_changed()
     }
@@ -246,7 +255,12 @@ impl State {
             .or_else(|| self.warnings.first().cloned());
         let counts = Counts::from_sessions(&self.sessions());
         let hide = self.config().blink_waiting && self.blink_hidden && counts.waiting > 0;
-        (error, counts, hide)
+        (error, counts, hide, self.has_issue())
+    }
+
+    /// A non-fatal problem; the bar shows a marker after the counts.
+    fn has_issue(&self) -> bool {
+        self.pipe_error.is_some() || self.poll_warning.is_some() || self.layer_warning.is_some()
     }
 
     /// Whether a redraw is needed: the bar differs from what `render_bar` last drew.
@@ -300,7 +314,18 @@ impl State {
             show_zero: config.show_zero,
             hide_waiting_icon: config.blink_waiting && self.blink_hidden,
         };
-        let lines = core_bar::render(counts, &options, rows, cols);
+        let mut lines = core_bar::render(counts, &options, rows, cols);
+        if self.has_issue() {
+            if let Some(last) = lines.last_mut() {
+                let used: usize = last.iter().map(|span| width(&span.text)).sum();
+                if used + ISSUE_MARKER_WIDTH <= cols {
+                    last.push(Span {
+                        text: " !".into(),
+                        state: None,
+                    });
+                }
+            }
+        }
         bar::print_lines(&lines, config);
     }
 
@@ -438,6 +463,8 @@ impl State {
         let sessions = self.sessions();
         let mut warnings = self.warnings.clone();
         warnings.extend(self.last_error.clone());
+        warnings.extend(self.pipe_error.clone());
+        warnings.extend(self.layer_warning.clone());
         warnings.extend(self.poll_warning.clone());
         let config = self.config.as_ref().expect("config is set in load");
         let icons = self.icons.as_ref().expect("icons are set in load");
@@ -496,10 +523,11 @@ impl State {
                     (false, 0) => None,
                     (false, n) => Some(format!("{n} unreadable status file(s) ignored")),
                 };
+                self.pipe_error = None;
                 self.store.apply_snapshot(files.records);
                 self.prune();
             }
-            Err(error) => self.last_error = Some(error),
+            Err(error) => self.poll_warning = Some(error),
         }
     }
 
@@ -518,8 +546,10 @@ impl State {
 }
 
 /// A record without a session is not a status record.
+/// A `updated_at` far ahead would block every later update of the same key.
 fn is_valid_record(record: &StatusRecord) -> bool {
     !record.zellij_session.is_empty()
+        && record.updated_at <= host::unix_now() + host::MAX_CLOCK_SKEW_SECS
 }
 
 /// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
