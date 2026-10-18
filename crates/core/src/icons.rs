@@ -10,6 +10,12 @@ pub struct Icons {
     pub session: String,
 }
 
+impl Default for Icons {
+    fn default() -> Self {
+        Self::from_config(&Config::default())
+    }
+}
+
 impl Icons {
     pub fn from_config(config: &Config) -> Self {
         let (working, waiting, idle, session) = match config.icons {

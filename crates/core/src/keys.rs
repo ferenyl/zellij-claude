@@ -98,6 +98,12 @@ pub struct Keymap {
     bindings: Vec<(KeyPress, Action)>,
 }
 
+impl Default for Keymap {
+    fn default() -> Self {
+        Self::from_config(&Config::default()).0
+    }
+}
+
 impl Keymap {
     /// Builds the keymap from the `key_*` config entries. Unparsable key names
     /// are skipped and reported.

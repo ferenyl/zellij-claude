@@ -677,4 +677,30 @@ mod tests {
             .collect();
         assert_eq!(live, vec![false, true, true]);
     }
+
+    #[test]
+    fn rows_with_emoji_tab_names_never_exceed_cols() {
+        let icons = unicode_icons();
+        let options = RowOptions {
+            icons: &icons,
+            show_state_text: true,
+            show_cwd: true,
+            home: None,
+        };
+        let names = [
+            "\u{2764}\u{FE0F}",
+            "ab\u{2699}\u{FE0F}cd",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+        ];
+        for name in names {
+            let mut s = session("work", true, 1, 0, SessionState::Idle);
+            s.tab_name = Some(name.into());
+            for cols in 0..40 {
+                for selected in [false, true] {
+                    let text = row_text(&s, selected, MAX_TAB_WIDTH, &options, cols);
+                    assert!(width(&text) <= cols, "{name:?} cols={cols}: {text:?}");
+                }
+            }
+        }
+    }
 }

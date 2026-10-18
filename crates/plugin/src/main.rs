@@ -23,9 +23,10 @@ const PIPE_NAME: &str = "claude-status";
 
 #[derive(Default)]
 struct State {
-    config: Option<Config>,
-    keymap: Option<Keymap>,
-    icons: Option<Icons>,
+    /// Defaults until `load` has parsed the configuration.
+    config: Config,
+    keymap: Keymap,
+    icons: Icons,
     warnings: Vec<String>,
     home: Option<String>,
     status_dir: Option<PathBuf>,
@@ -33,6 +34,9 @@ struct State {
     store: Store,
     /// `None` until the first `SessionUpdate`; pruning waits for it.
     live: Option<Vec<LiveSession>>,
+    /// Set once `get_session_list` has returned a full scan. Before that `SessionUpdate`
+    /// lists the current session only, so pruning (and file removal) must wait.
+    session_list_complete: bool,
     picker: Picker,
     last_error: Option<String>,
     /// Non-fatal problem from the last status directory read.
@@ -81,13 +85,15 @@ impl ZellijPlugin for State {
             .chain(&key_warnings)
             .map(ToString::to_string)
             .collect();
-        self.icons = Some(Icons::from_config(&config));
-        self.keymap = Some(keymap);
-        self.config = Some(config);
+        self.icons = Icons::from_config(&config);
+        self.keymap = keymap;
+        self.config = config;
         let ids = get_plugin_ids();
         self.plugin_id = ids.plugin_id;
         self.zellij_pid = ids.zellij_pid;
 
+        // The same set in both modes: Zellij keeps one permission entry per plugin URL and
+        // overwrites it with whatever an instance requests, so differing sets would prompt again.
         let mut permissions = vec![
             PermissionType::ReadApplicationState,
             PermissionType::ChangeApplicationState,
@@ -123,7 +129,7 @@ impl ZellijPlugin for State {
                 }
                 self.init_status_dir();
                 self.bind_open_key();
-                refresh_session_list();
+                self.refresh_session_list();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -155,7 +161,7 @@ impl ZellijPlugin for State {
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
-                    refresh_session_list();
+                    self.refresh_session_list();
                     if self.host_folder_ready {
                         if self.config().mode == Mode::Bar
                             && host::layer_file_needs_refresh(self.zellij_pid)
@@ -247,11 +253,11 @@ impl ZellijPlugin for State {
 
 impl State {
     fn config(&self) -> &Config {
-        self.config.as_ref().expect("config is set in load")
+        &self.config
     }
 
     fn icons(&self) -> &Icons {
-        self.icons.as_ref().expect("icons are set in load")
+        &self.icons
     }
 
     fn sessions(&self) -> Vec<ClaudeSession> {
@@ -335,7 +341,7 @@ impl State {
         };
         self.jump_warning = None;
         let sessions = self.sessions();
-        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        let keymap = &self.keymap;
         match self.picker.handle_key(press, keymap, &sessions) {
             Command::None => false,
             Command::Redraw => true,
@@ -482,15 +488,15 @@ impl State {
         warnings.extend(self.last_error.clone());
         warnings.extend(self.jump_warning.clone());
         warnings.extend(self.poll_warning.clone());
-        let config = self.config.as_ref().expect("config is set in load");
-        let icons = self.icons.as_ref().expect("icons are set in load");
+        let config = &self.config;
+        let icons = &self.icons;
         let options = RowOptions {
             icons,
             show_state_text: config.show_state_text,
             show_cwd: config.show_cwd,
             home: self.home.as_deref(),
         };
-        let keymap = self.keymap.as_ref().expect("keymap is set in load");
+        let keymap = &self.keymap;
         let lines = self
             .picker
             .render(&sessions, keymap, &options, &warnings, rows, cols);
@@ -500,12 +506,7 @@ impl State {
     fn init_status_dir(&mut self) {
         // The environment is only needed without `status_dir`, or to expand its `~`. Reading it
         // right after `Granted` can panic in the host shim, so it waits for the next `SessionUpdate`.
-        let needs_env = self
-            .config()
-            .status_dir
-            .as_ref()
-            .is_none_or(|dir| dir.starts_with("~"));
-        if needs_env {
+        if self.config().needs_session_env() {
             self.env_pending = true;
         } else {
             self.resolve_status_dir(&BTreeMap::new());
@@ -539,18 +540,32 @@ impl State {
                     (false, 0) => None,
                     (false, n) => Some(format!("{n} unreadable status file(s) ignored")),
                 };
-                self.store.apply_snapshot(files.records);
+                self.store.apply_snapshot(files.records, !files.truncated);
                 self.prune();
             }
             Err(error) => self.last_error = Some(error),
         }
     }
 
+    /// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
+    /// would list the current session only and live sessions elsewhere would look gone.
+    fn refresh_session_list(&mut self) {
+        // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
+        if let Ok(snapshot) = get_session_list() {
+            self.live = Some(
+                snapshot
+                    .live_sessions
+                    .iter()
+                    .map(host::to_live_session)
+                    .collect(),
+            );
+            self.session_list_complete = true;
+        }
+    }
+
     fn prune(&mut self) {
         let stale_after = self.config().stale_after_secs;
-        let Some(live) = &self.live else {
-            return;
-        };
+        let live = self.live.as_deref().filter(|_| self.session_list_complete);
         let removed = self.store.prune(live, host::unix_now(), stale_after);
         if self.host_folder_ready {
             for (zellij_session, pane_id) in removed {
@@ -563,11 +578,4 @@ impl State {
 /// A record without a session is not a status record.
 fn is_valid_record(record: &StatusRecord) -> bool {
     !record.zellij_session.is_empty()
-}
-
-/// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
-/// would list the current session only and live sessions elsewhere would look gone.
-fn refresh_session_list() {
-    // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
-    let _ = get_session_list();
 }

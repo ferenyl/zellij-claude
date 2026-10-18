@@ -7,6 +7,9 @@ use crate::status_file::StatusRecord;
 /// since `SessionUpdate` can lag behind a newly opened pane.
 const NEW_PANE_GRACE_SECS: u64 = 10;
 
+/// Longer grace for other sessions, whose metadata arrives via the session scan.
+const OTHER_SESSION_GRACE_SECS: u64 = 30;
+
 /// Identifies a Claude session by its Zellij session name and terminal pane id.
 pub type SessionKey = (String, u32);
 
@@ -74,7 +77,7 @@ pub struct Store {
 impl Store {
     /// Applies one update (pipe message or status file). The newest `updated_at` wins;
     /// on a tie the update applied last wins, except that a tool event never replaces
-    /// idle from the same second: pipe messages are sent in the background and can
+    /// idle or waiting from the same second: pipe messages are sent in the background and can
     /// arrive after the `Stop` that followed them.
     pub fn apply(&mut self, record: StatusRecord) {
         let Some(change) = event_to_state(&record.hook_event, record.notification_type.as_deref())
@@ -87,10 +90,10 @@ impl Store {
             "PreToolUse" | "PostToolUse" | "PostToolUseFailure"
         );
         if is_tool_event
-            && self
-                .entries
-                .get(&key)
-                .is_some_and(|e| e.updated_at == record.updated_at && e.state == SessionState::Idle)
+            && self.entries.get(&key).is_some_and(|e| {
+                e.updated_at == record.updated_at
+                    && matches!(e.state, SessionState::Idle | SessionState::Waiting)
+            })
         {
             return;
         }
@@ -125,9 +128,16 @@ impl Store {
         }
     }
 
-    /// Applies a full read of the status directory. Sessions without a file are dropped,
-    /// since the hook writes the file before sending the pipe message.
-    pub fn apply_snapshot(&mut self, records: Vec<StatusRecord>) {
+    /// Applies a read of the status directory. Sessions without a file are dropped,
+    /// since the hook writes the file before sending the pipe message. A partial read
+    /// (`complete == false`) only applies the records.
+    pub fn apply_snapshot(&mut self, records: Vec<StatusRecord>, complete: bool) {
+        if !complete {
+            for record in records {
+                self.apply(record);
+            }
+            return;
+        }
         let present: BTreeSet<SessionKey> = records
             .iter()
             .map(|r| (r.zellij_session.clone(), r.pane_id))
@@ -141,19 +151,28 @@ impl Store {
 
     /// Removes sessions whose pane is gone. In a live Zellij session the pane must exist
     /// as a running terminal (after a short grace period for new panes); in a session
-    /// that is not live, entries expire after `stale_after_secs`. Returns the removed keys.
+    /// that is not live, entries expire after `stale_after_secs`. `live` is `None` until the
+    /// session list is complete; nothing is removed then. Returns the removed keys.
     pub fn prune(
         &mut self,
-        live: &[LiveSession],
+        live: Option<&[LiveSession]>,
         now: u64,
         stale_after_secs: u64,
     ) -> Vec<SessionKey> {
+        let Some(live) = live else {
+            return Vec::new();
+        };
         let mut removed = Vec::new();
         self.entries.retain(|key, entry| {
             let keep = match live.iter().find(|s| s.name == key.0) {
                 Some(session) => {
+                    let grace = if session.is_current {
+                        NEW_PANE_GRACE_SECS
+                    } else {
+                        OTHER_SESSION_GRACE_SECS
+                    };
                     find_terminal(session, key.1).is_some()
-                        || now.saturating_sub(entry.updated_at) < NEW_PANE_GRACE_SECS
+                        || now.saturating_sub(entry.updated_at) < grace
                 }
                 None => now.saturating_sub(entry.updated_at) < stale_after_secs,
             };
@@ -313,6 +332,19 @@ mod tests {
     }
 
     #[test]
+    fn tool_event_does_not_replace_waiting_from_same_second() {
+        let mut store = Store::default();
+
+        store.apply(record("work", 1, "PermissionRequest", 10));
+        store.apply(record("work", 1, "PreToolUse", 10));
+
+        assert_eq!(
+            states(&store),
+            vec![("work".into(), 1, SessionState::Waiting)]
+        );
+    }
+
+    #[test]
     fn prompt_replaces_idle_from_same_second() {
         let mut store = Store::default();
 
@@ -353,7 +385,7 @@ mod tests {
         store.apply(record("work", 1, "Stop", 10));
 
         store.apply(record("work", 1, "SessionEnd", 20));
-        store.apply_snapshot(vec![record("work", 1, "Stop", 10)]);
+        store.apply_snapshot(vec![record("work", 1, "Stop", 10)], true);
 
         assert!(states(&store).is_empty());
     }
@@ -374,7 +406,7 @@ mod tests {
         store.apply(record("work", 1, "Stop", 10));
         store.apply(record("work", 2, "Stop", 10));
 
-        store.apply_snapshot(vec![record("work", 2, "UserPromptSubmit", 11)]);
+        store.apply_snapshot(vec![record("work", 2, "UserPromptSubmit", 11)], true);
 
         assert_eq!(
             states(&store),
@@ -394,7 +426,7 @@ mod tests {
         exited.exited = true;
 
         let removed = store.prune(
-            &[live("work", true, vec![pane(1, 0), plugin, exited])],
+            Some(&[live("work", true, vec![pane(1, 0), plugin, exited])]),
             100,
             3600,
         );
@@ -408,12 +440,12 @@ mod tests {
         let mut store = Store::default();
         store.apply(record("work", 9, "SessionStart", 100));
 
-        let removed = store.prune(&[live("work", true, vec![pane(1, 0)])], 105, 3600);
+        let removed = store.prune(Some(&[live("work", true, vec![pane(1, 0)])]), 105, 3600);
 
         assert!(removed.is_empty());
         assert_eq!(
             store
-                .prune(&[live("work", true, vec![pane(1, 0)])], 110, 3600)
+                .prune(Some(&[live("work", true, vec![pane(1, 0)])]), 110, 3600)
                 .len(),
             1
         );
@@ -453,7 +485,7 @@ mod tests {
         store.apply(record("gone", 1, "Stop", 100));
         store.apply(record("gone", 2, "Stop", 50));
 
-        let removed = store.prune(&[], 150, 60);
+        let removed = store.prune(Some(&[]), 150, 60);
 
         assert_eq!(removed, vec![("gone".into(), 2)]);
         assert_eq!(states(&store), vec![("gone".into(), 1, SessionState::Idle)]);
@@ -481,5 +513,44 @@ mod tests {
         assert_eq!(work.title.as_deref(), Some("pane 7"));
         assert!(work.is_floating);
         assert_eq!(work.cwd.as_deref(), Some("/code"));
+    }
+
+    #[test]
+    fn prune_removes_nothing_until_session_list_is_complete() {
+        let mut store = Store::default();
+        store.apply(record("other", 1, "Stop", 1));
+
+        let removed = store.prune(None, 100_000, 60);
+
+        assert!(removed.is_empty());
+        assert_eq!(
+            states(&store),
+            vec![("other".into(), 1, SessionState::Idle)]
+        );
+    }
+
+    #[test]
+    fn other_sessions_get_longer_grace_for_unreported_panes() {
+        let mut store = Store::default();
+        store.apply(record("work", 9, "SessionStart", 100));
+        store.apply(record("other", 9, "SessionStart", 100));
+        let sessions = [
+            live("work", true, vec![pane(1, 0)]),
+            live("other", false, vec![pane(1, 0)]),
+        ];
+
+        let removed = store.prune(Some(&sessions), 115, 3600);
+
+        assert_eq!(removed, vec![("work".into(), 9)]);
+    }
+
+    #[test]
+    fn partial_snapshot_keeps_entries_without_file() {
+        let mut store = Store::default();
+        store.apply(record("work", 1, "Stop", 10));
+
+        store.apply_snapshot(vec![record("work", 2, "Stop", 11)], false);
+
+        assert_eq!(store.sessions(&[]).len(), 2);
     }
 }
