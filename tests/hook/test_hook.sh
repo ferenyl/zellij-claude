@@ -112,6 +112,33 @@ run_hook '{"hook_event_name":"Stop"}' STUB_SLEEP=10
 elapsed=$(($(date +%s) - start))
 check "does not wait for a hanging zellij pipe" '[ "$elapsed" -le 2 ]'
 
+# pipe_count: lines logged so far, after giving the background pipe time to run.
+pipe_count() {
+    sleep 0.5
+    if [ -f "$log" ]; then wc -l <"$log"; else echo 0; fi
+}
+
+reset
+run_hook '{"hook_event_name":"PreToolUse"}'
+run_hook '{"hook_event_name":"PreToolUse"}'
+check "PreToolUse while working writes file but is not piped again" '[ "$(pipe_count)" -eq 1 ] && jq -e ".hook_event == \"PreToolUse\"" "$file" >/dev/null'
+
+reset
+run_hook '{"hook_event_name":"Notification","notification_type":"permission_prompt"}'
+run_hook '{"hook_event_name":"PostToolUse"}'
+check "PostToolUse after Notification is piped" '[ "$(pipe_count)" -eq 2 ]'
+
+reset
+run_hook '{"hook_event_name":"PermissionRequest"}'
+run_hook '{"hook_event_name":"PostToolUse"}'
+run_hook '{"hook_event_name":"PostToolUse"}'
+check "PostToolUse after PermissionRequest is piped once" '[ "$(pipe_count)" -eq 2 ]'
+
+reset
+run_hook '{"hook_event_name":"SessionStart"}'
+run_hook '{"hook_event_name":"SessionStart"}'
+check "SessionStart always pipes" '[ "$(pipe_count)" -eq 2 ]'
+
 if [ "$failures" -gt 0 ]; then
     echo "$failures test(s) failed"
     exit 1
