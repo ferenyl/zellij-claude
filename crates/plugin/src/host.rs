@@ -15,6 +15,7 @@ use zellij_tile::prelude::*;
 const HOST_MOUNT: &str = "/host";
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
 const LAYER_FILE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+const LAYER_FILE_REFRESH_SECS: u64 = 24 * 3600;
 const MAX_STATUS_FILES: usize = 500;
 
 pub fn unix_now() -> u64 {
@@ -71,33 +72,49 @@ pub fn remove_status_file(zellij_session: &str, pane_id: u32) {
     let _ = std::fs::remove_file(Path::new(HOST_MOUNT).join(file_name(zellij_session, pane_id)));
 }
 
-pub fn write_layer_states(zellij_pid: u32, layers: &LayerStates) -> Result<(), String> {
+pub fn write_layer_states(
+    zellij_pid: u32,
+    plugin_id: u32,
+    layers: &LayerStates,
+) -> Result<(), String> {
     let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
     // Written to a temp name and renamed, so the picker never reads a half-written file.
-    let tmp = Path::new(HOST_MOUNT).join(format!("{}.tmp", layer_file_name(zellij_pid)));
+    // The name is per instance: every bar writes this file.
+    let tmp =
+        Path::new(HOST_MOUNT).join(format!("{}.{plugin_id}.tmp", layer_file_name(zellij_pid)));
     std::fs::write(&tmp, encode_layers(layers))
         .and_then(|()| std::fs::rename(&tmp, path))
         .map_err(|e| format!("cannot write layer state: {e}"))
 }
 
-/// Removes layer state files of Zellij processes that are long gone.
-pub fn remove_old_layer_files() {
+fn modified_age_secs(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some(SystemTime::now().duration_since(modified).ok()?.as_secs())
+}
+
+/// The layer file is missing or old enough that a cleanup could take it for a dead one.
+pub fn layer_file_needs_refresh(zellij_pid: u32) -> bool {
+    let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
+    modified_age_secs(&path).is_none_or(|age| age > LAYER_FILE_REFRESH_SECS)
+}
+
+/// Removes layer state files (and leftover temp files) of Zellij processes that are long
+/// gone. Live sessions rewrite theirs daily, see [`layer_file_needs_refresh`].
+pub fn remove_old_layer_files(own_zellij_pid: u32) {
     let Ok(entries) = std::fs::read_dir(Path::new(HOST_MOUNT)) else {
         return;
     };
-    let now = SystemTime::now();
+    let own = layer_file_name(own_zellij_pid);
     for entry in entries.filter_map(Result::ok) {
         let name = entry.file_name();
         let name = name.to_string_lossy();
-        if !(name.starts_with("floating-") && name.ends_with(".state")) {
+        if !name.starts_with("floating-")
+            || !(name.ends_with(".state") || name.ends_with(".tmp"))
+            || *name == own
+        {
             continue;
         }
-        let old = entry
-            .metadata()
-            .and_then(|m| m.modified())
-            .ok()
-            .and_then(|modified| now.duration_since(modified).ok())
-            .is_some_and(|age| age.as_secs() > LAYER_FILE_MAX_AGE_SECS);
+        let old = modified_age_secs(&entry.path()).is_some_and(|age| age > LAYER_FILE_MAX_AGE_SECS);
         if old {
             let _ = std::fs::remove_file(entry.path());
         }

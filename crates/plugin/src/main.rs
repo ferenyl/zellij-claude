@@ -133,7 +133,7 @@ impl ZellijPlugin for State {
             Event::HostFolderChanged(_) => {
                 self.host_folder_ready = true;
                 if self.config().mode == Mode::Bar {
-                    host::remove_old_layer_files();
+                    host::remove_old_layer_files(self.zellij_pid);
                 }
                 self.last_error = None;
                 self.save_layers();
@@ -157,6 +157,11 @@ impl ZellijPlugin for State {
                     self.since_poll = 0.0;
                     refresh_session_list();
                     if self.host_folder_ready {
+                        if self.config().mode == Mode::Bar
+                            && host::layer_file_needs_refresh(self.zellij_pid)
+                        {
+                            self.save_layers();
+                        }
                         self.poll_status_files();
                     } else if let Some(dir) = &self.status_dir {
                         change_host_folder(dir.clone());
@@ -340,7 +345,10 @@ impl State {
             }
             Command::Jump(session) => {
                 // An unknown name would make Zellij create a new empty session.
-                if !session.is_live && !self.resurrectable.contains(&session.zellij_session) {
+                if self.live.is_some()
+                    && !session.is_live
+                    && !self.resurrectable.contains(&session.zellij_session)
+                {
                     self.jump_warning = Some(format!(
                         "session \"{}\" is not running",
                         session.zellij_session
@@ -370,8 +378,10 @@ impl State {
         if self.config().mode != Mode::Bar || !self.host_folder_ready {
             return;
         }
-        if let Err(error) = host::write_layer_states(self.zellij_pid, &self.layers) {
-            self.last_error = Some(error);
+        // Not a bar error: the picker falls back to "hidden" without this file.
+        if let Err(error) = host::write_layer_states(self.zellij_pid, self.plugin_id, &self.layers)
+        {
+            eprintln!("{error}");
         }
     }
 
