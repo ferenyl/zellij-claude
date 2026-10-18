@@ -16,6 +16,8 @@ const HOST_MOUNT: &str = "/host";
 /// Records stamped further ahead than this are ignored.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
+const LAYER_FILE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
+const LAYER_FILE_REFRESH_SECS: u64 = 24 * 3600;
 const MAX_STATUS_FILES: usize = 500;
 /// Larger files are not status files and are counted as invalid.
 const MAX_STATUS_FILE_BYTES: u64 = 64 * 1024;
@@ -84,10 +86,53 @@ pub fn remove_status_file(zellij_session: &str, pane_id: u32) {
     let _ = std::fs::remove_file(Path::new(HOST_MOUNT).join(file_name(zellij_session, pane_id)));
 }
 
-pub fn write_layer_states(zellij_pid: u32, layers: &LayerStates) -> Result<(), String> {
+pub fn write_layer_states(
+    zellij_pid: u32,
+    plugin_id: u32,
+    layers: &LayerStates,
+) -> Result<(), String> {
     let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
-    std::fs::write(path, encode_layers(layers))
+    // Written to a temp name and renamed, so the picker never reads a half-written file.
+    // The name is per instance: every bar writes this file.
+    let tmp =
+        Path::new(HOST_MOUNT).join(format!("{}.{plugin_id}.tmp", layer_file_name(zellij_pid)));
+    std::fs::write(&tmp, encode_layers(layers))
+        .and_then(|()| std::fs::rename(&tmp, path))
         .map_err(|e| format!("cannot write layer state: {e}"))
+}
+
+fn modified_age_secs(path: &Path) -> Option<u64> {
+    let modified = std::fs::metadata(path).and_then(|m| m.modified()).ok()?;
+    Some(SystemTime::now().duration_since(modified).ok()?.as_secs())
+}
+
+/// The layer file is missing or old enough that a cleanup could take it for a dead one.
+pub fn layer_file_needs_refresh(zellij_pid: u32) -> bool {
+    let path = Path::new(HOST_MOUNT).join(layer_file_name(zellij_pid));
+    modified_age_secs(&path).is_none_or(|age| age > LAYER_FILE_REFRESH_SECS)
+}
+
+/// Removes layer state files (and leftover temp files) of Zellij processes that are long
+/// gone. Live sessions rewrite theirs daily, see [`layer_file_needs_refresh`].
+pub fn remove_old_layer_files(own_zellij_pid: u32) {
+    let Ok(entries) = std::fs::read_dir(Path::new(HOST_MOUNT)) else {
+        return;
+    };
+    let own = layer_file_name(own_zellij_pid);
+    for entry in entries.filter_map(Result::ok) {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+        if !name.starts_with("floating-")
+            || !(name.ends_with(".state") || name.ends_with(".tmp"))
+            || *name == own
+        {
+            continue;
+        }
+        let old = modified_age_secs(&entry.path()).is_some_and(|age| age > LAYER_FILE_MAX_AGE_SECS);
+        if old {
+            let _ = std::fs::remove_file(entry.path());
+        }
+    }
 }
 
 /// `None` if the bar has not written the file (no bar in the layout) or it is unreadable.
@@ -175,8 +220,15 @@ pub fn to_coordinates(pane: &HiddenPane) -> Option<(PaneId, FloatingPaneCoordina
 }
 
 pub fn to_key_press(key: &KeyWithModifier) -> Option<KeyPress> {
+    let shift = key.key_modifiers.contains(&KeyModifier::Shift);
+    if key.key_modifiers.contains(&KeyModifier::Super) {
+        return None;
+    }
     let mapped = match key.bare_key {
+        // Kitty protocol sends `Char('j')` + Shift where legacy terminals send `Char('J')`.
+        BareKey::Char(c) if shift && c.is_lowercase() => Key::Char(c.to_uppercase().next()?),
         BareKey::Char(c) => Key::Char(c),
+        _ if shift => return None,
         BareKey::Up => Key::Up,
         BareKey::Down => Key::Down,
         BareKey::Left => Key::Left,

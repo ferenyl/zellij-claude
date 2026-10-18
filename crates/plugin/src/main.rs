@@ -64,6 +64,13 @@ struct State {
     layers: LayerStates,
     /// Bar: tab position of a shown picker, from the last `PaneUpdate`.
     shown_picker: Option<usize>,
+    /// This plugin instance's id and the Zellij server pid, read once in `load`.
+    plugin_id: u32,
+    zellij_pid: u32,
+    /// Names of sessions that can be resurrected, from `SessionUpdate`.
+    resurrectable: Vec<String>,
+    /// Why the last jump was refused; cleared on the next key.
+    jump_warning: Option<String>,
     /// The session environment must be read, but not before the permission is live.
     env_pending: bool,
     /// Bar: what was last rendered, to skip redraws that would look the same.
@@ -87,6 +94,9 @@ impl ZellijPlugin for State {
         self.icons = Icons::from_config(&config);
         self.keymap = keymap;
         self.config = config;
+        let ids = get_plugin_ids();
+        self.plugin_id = ids.plugin_id;
+        self.zellij_pid = ids.zellij_pid;
 
         // The same set in both modes: Zellij keeps one permission entry per plugin URL and
         // overwrites it with whatever an instance requests, so differing sets would prompt again.
@@ -110,6 +120,7 @@ impl ZellijPlugin for State {
             EventType::PermissionRequestResult,
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
+            EventType::BeforeClose,
         ]);
     }
 
@@ -120,9 +131,7 @@ impl ZellijPlugin for State {
                     // set_selectable: only after the permission prompt, which needs focus.
                     Mode::Bar => set_selectable(false),
                     // rename_plugin_pane: the frame title would otherwise be the plugin path.
-                    Mode::Picker => {
-                        rename_plugin_pane(get_plugin_ids().plugin_id, "Claude sessions")
-                    }
+                    Mode::Picker => rename_plugin_pane(self.plugin_id, "Claude sessions"),
                 }
                 self.init_status_dir();
                 self.bind_open_key();
@@ -135,6 +144,9 @@ impl ZellijPlugin for State {
             }
             Event::HostFolderChanged(_) => {
                 self.host_folder_ready = true;
+                if self.config().mode == Mode::Bar {
+                    host::remove_old_layer_files(self.zellij_pid);
+                }
                 self.last_error = None;
                 self.save_layers();
                 self.poll_status_files();
@@ -157,6 +169,11 @@ impl ZellijPlugin for State {
                     self.since_poll = 0.0;
                     self.refresh_session_list();
                     if self.host_folder_ready {
+                        if self.config().mode == Mode::Bar
+                            && host::layer_file_needs_refresh(self.zellij_pid)
+                        {
+                            self.save_layers();
+                        }
                         self.poll_status_files();
                     } else if let Some(dir) = &self.status_dir {
                         change_host_folder(dir.clone());
@@ -168,8 +185,16 @@ impl ZellijPlugin for State {
                 self.arm_timer();
                 self.bar_changed()
             }
-            Event::SessionUpdate(sessions, _) => {
+            Event::BeforeClose => {
+                // Best effort: the session may already be shutting down.
+                if let Some(isolation) = self.isolation.take() {
+                    picker::restore(&isolation);
+                }
+                false
+            }
+            Event::SessionUpdate(sessions, resurrectable) => {
                 self.live = Some(sessions.iter().map(host::to_live_session).collect());
+                self.resurrectable = resurrectable.into_iter().map(|(name, _)| name).collect();
                 if self.env_pending {
                     self.env_pending = false;
                     self.init_status_dir_from_env();
@@ -192,7 +217,7 @@ impl ZellijPlugin for State {
                 Mode::Picker => self.on_pane_update(&manifest),
                 Mode::Bar => {
                     let panes = host::to_positioned_snapshots(&manifest);
-                    self.shown_picker = shown_picker_position(get_plugin_ids().plugin_id, &panes);
+                    self.shown_picker = shown_picker_position(self.plugin_id, &panes);
                     false
                 }
             },
@@ -323,6 +348,7 @@ impl State {
         let Some(press) = host::to_key_press(key) else {
             return false;
         };
+        self.jump_warning = None;
         let sessions = self.sessions();
         let keymap = &self.keymap;
         match self.picker.handle_key(press, keymap, &sessions) {
@@ -333,6 +359,17 @@ impl State {
                 false
             }
             Command::Jump(session) => {
+                // An unknown name would make Zellij create a new empty session.
+                if self.live.is_some()
+                    && !session.is_live
+                    && !self.resurrectable.contains(&session.zellij_session)
+                {
+                    self.jump_warning = Some(format!(
+                        "session \"{}\" is not running",
+                        session.zellij_session
+                    ));
+                    return true;
+                }
                 self.close_picker();
                 picker::jump(&session);
                 false
@@ -357,7 +394,7 @@ impl State {
             return;
         }
         self.layer_warning =
-            host::write_layer_states(get_plugin_ids().zellij_pid, &self.layers).err();
+            host::write_layer_states(self.zellij_pid, self.plugin_id, &self.layers).err();
     }
 
     /// A hidden plugin gets no `PaneUpdate`/`TabUpdate`, so the next one after showing
@@ -371,7 +408,7 @@ impl State {
     /// `Visible` is not sent when a hidden picker is shown again, so its own
     /// `is_suppressed` flag tells when it opens or closes.
     fn on_pane_update(&mut self, manifest: &PaneManifest) -> bool {
-        let own_id = get_plugin_ids().plugin_id;
+        let own_id = self.plugin_id;
         let own = manifest.panes.iter().find_map(|(position, panes)| {
             panes
                 .iter()
@@ -383,8 +420,11 @@ impl State {
         let is_suppressed = own.map(|(_, suppressed)| suppressed);
         let moved = moved_tab(was, own);
 
-        if moved {
-            // Moved away from the isolated tab by `move_to_focused_tab`.
+        // Closed or hidden from outside (`close-pane`, hide), so `close_picker` never ran.
+        let hidden_outside = was.is_some_and(|(_, suppressed)| !suppressed)
+            && own.is_none_or(|(_, suppressed)| suppressed);
+        if moved || hidden_outside {
+            // Moved away from the isolated tab by `move_to_focused_tab`, or hidden from outside.
             if let Some(isolation) = self.isolation.take() {
                 picker::restore(&isolation);
             }
@@ -408,7 +448,7 @@ impl State {
         let tab = self.last_tabs.iter().find(|t| t.position == position);
         let layer_was_visible = match tab {
             Some(tab) => tab.are_floating_panes_visible,
-            None => host::read_layer_states(get_plugin_ids().zellij_pid)
+            None => host::read_layer_states(self.zellij_pid)
                 .and_then(|layers| layers.get(&position).copied())
                 .unwrap_or(false),
         };
@@ -452,6 +492,7 @@ impl State {
         let sessions = self.sessions();
         let mut warnings = self.warnings.clone();
         warnings.extend(self.last_error.clone());
+        warnings.extend(self.jump_warning.clone());
         warnings.extend(self.pipe_error.clone());
         warnings.extend(self.layer_warning.clone());
         warnings.extend(self.poll_warning.clone());

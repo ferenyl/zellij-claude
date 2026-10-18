@@ -33,7 +33,12 @@ pub fn order(mut sessions: Vec<ClaudeSession>, all_sessions: bool) -> Vec<Claude
 pub enum LineKind {
     Warning,
     Header,
-    Row { state: SessionState, selected: bool },
+    Row {
+        state: SessionState,
+        selected: bool,
+        /// The Zellij session is running; other rows are drawn dimmed.
+        live: bool,
+    },
     Message,
     Filter,
     Help,
@@ -139,7 +144,7 @@ impl Picker {
             Some(Action::JumpWaiting) => self
                 .visible(sessions)
                 .into_iter()
-                .find(|s| s.state == SessionState::Waiting)
+                .find(|s| s.state == SessionState::Waiting && s.is_live)
                 .map_or(Command::None, |s| Command::Jump(s.clone())),
             None => Command::None,
         };
@@ -280,6 +285,7 @@ impl Picker {
                 kind: LineKind::Row {
                     state: session.state,
                     selected,
+                    live: session.is_live,
                 },
                 text: row_text(session, selected, tab_width, options, cols),
             });
@@ -389,6 +395,7 @@ mod tests {
             cwd: Some(format!("/home/u/code/{name}-{pane}")),
             claude_session_id: None,
             updated_at: 0,
+            is_live: true,
             is_current_session: current,
             tab_position: Some(tab),
             tab_name: Some(format!("tab{tab}")),
@@ -553,7 +560,8 @@ mod tests {
             lines[1].kind,
             LineKind::Row {
                 state: SessionState::Working,
-                selected: true
+                selected: true,
+                live: true
             }
         );
     }
@@ -633,6 +641,41 @@ mod tests {
         assert_eq!(shorten_home("/home/u/x", Some("/home/u")), "~/x");
         assert_eq!(shorten_home("/home/u", Some("/home/u")), "~");
         assert_eq!(shorten_home("/home/user2", Some("/home/u")), "/home/user2");
+    }
+
+    #[test]
+    fn jump_waiting_skips_sessions_that_are_not_live() {
+        let mut sessions = fixture();
+        sessions[1].is_live = false;
+        let mut picker = Picker::default();
+
+        let command = picker.handle_key(press('w'), &keymap(), &sessions);
+
+        assert_eq!(command, Command::None);
+    }
+
+    #[test]
+    fn rows_carry_the_live_flag() {
+        let mut sessions = fixture();
+        sessions[0].is_live = false;
+        let icons = unicode_icons();
+        let options = RowOptions {
+            icons: &icons,
+            show_state_text: true,
+            show_cwd: true,
+            home: None,
+        };
+
+        let lines = Picker::default().render(&sessions, &keymap(), &options, &[], 20, 80);
+
+        let live: Vec<_> = lines
+            .iter()
+            .filter_map(|l| match l.kind {
+                LineKind::Row { live, .. } => Some(live),
+                _ => None,
+            })
+            .collect();
+        assert_eq!(live, vec![false, true, true]);
     }
 
     #[test]

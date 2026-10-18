@@ -207,6 +207,7 @@ mod tests {
             cwd: None,
             claude_session_id: None,
             updated_at: 0,
+            is_live: true,
             is_current_session: true,
             tab_position: None,
             tab_name: None,
