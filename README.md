@@ -297,7 +297,7 @@ The hook writes one JSON file per pane to `$CLAUDE_ZELLIJ_STATUS_DIR`, else `$XD
 {"zellij_session":"work","pane_id":12,"hook_event":"Notification","notification_type":"permission_prompt","cwd":"/home/user/project","claude_session_id":"abc123","updated_at":1760558400}
 ```
 
-The file is written atomically, then sent over `zellij pipe` so the current session updates at once. Plugin instances in every Zellij session re-read the directory every `poll_interval_secs`, which is how sessions in other Zellij sessions show up. The newest update wins; a tool event never replaces idle from the same second. `idle_prompt` (sent after about a minute without input) resets a pane that missed its `Stop`, e.g. after an interrupt.
+The file is written atomically, then sent over `zellij pipe` so the current session updates at once. Plugin instances in every Zellij session re-read the directory every `poll_interval_secs`, which is how sessions in other Zellij sessions show up. The newest update wins; a tool event never replaces idle or waiting from the same second. `idle_prompt` (sent after about a minute without input) resets a pane that missed its `Stop`, e.g. after an interrupt.
 
 Entries are removed when:
 
