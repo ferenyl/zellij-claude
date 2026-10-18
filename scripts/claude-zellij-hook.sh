@@ -8,6 +8,17 @@
 # Status directory: $CLAUDE_ZELLIJ_STATUS_DIR, else $XDG_CACHE_HOME/claude-zellij,
 # else ~/.cache/claude-zellij (must match the plugin's `status_dir`).
 
+# Mirrors crates/core/src/hook_map.rs::event_to_state.
+state_of() {
+    case "$1" in
+        SessionStart | Stop | StopFailure) echo idle ;;
+        UserPromptSubmit | PreToolUse | PostToolUse | PostToolUseFailure) echo working ;;
+        Notification) [ "$2" = idle_prompt ] && echo idle || echo waiting ;;
+        PermissionRequest) echo waiting ;;
+        SessionEnd) echo ended ;;
+    esac
+}
+
 main() {
     [ -n "${ZELLIJ_SESSION_NAME:-}" ] || return 0
     case "${ZELLIJ_PANE_ID:-}" in
@@ -37,6 +48,16 @@ main() {
             updated_at: $now
         }' 2>/dev/null) || return 0
 
+    notification=$(printf '%s' "$input" | jq -r '.notification_type // empty' 2>/dev/null)
+    prev_event= prev_notification=
+    if [ -r "$file" ]; then
+        prev=$(jq -r '[.hook_event // "", .notification_type // ""] | join("\t")' "$file" 2>/dev/null)
+        prev_event=${prev%%	*}
+        prev_notification=${prev#*	}
+    fi
+    state=$(state_of "$event" "$notification")
+    prev_state=$(state_of "$prev_event" "$prev_notification")
+
     # The file is written before the pipe message: the plugin drops sessions
     # without a status file when it re-reads the directory.
     if [ "$event" = "SessionEnd" ]; then
@@ -52,6 +73,12 @@ main() {
             rm -f "$tmp"
         fi
     fi
+
+    # Only state changes are piped; the file above is still written every time.
+    case "$event" in
+        SessionStart | SessionEnd | PermissionRequest | StopFailure) ;;
+        *) [ "$state" != "$prev_state" ] || return 0 ;;
+    esac
 
     command -v zellij >/dev/null 2>&1 || return 0
     # Backgrounded and detached from Claude's stdio: `zellij pipe` waits for every
