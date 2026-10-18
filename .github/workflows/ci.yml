@@ -31,6 +31,15 @@ jobs:
       - name: Test
         run: cargo test --workspace --locked
 
+      - name: Clippy (wasm)
+        run: cargo clippy --target wasm32-wasip1 -p claude-sessions-plugin --locked -- -D warnings
+
+      - name: Build wasm
+        run: cargo build --release --locked --target wasm32-wasip1 -p claude-sessions-plugin
+
+      - name: Hook test
+        run: sh tests/hook/test_hook.sh
+
       - name: Shellcheck
         run: |
           shopt -s nullglob globstar
