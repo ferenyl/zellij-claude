@@ -73,6 +73,10 @@ struct State {
     jump_warning: Option<String>,
     /// The session environment must be read, but not before the permission is live.
     env_pending: bool,
+    /// Set on `Granted`. Host calls needing permissions also wait for the first `SessionUpdate`.
+    permissions_granted: bool,
+    /// CLI pipes that arrived before the permissions were live, unblocked once they are.
+    pending_pipes: Vec<String>,
     /// Bar: what was last rendered, to skip redraws that would look the same.
     last_bar_view: Option<BarView>,
 }
@@ -135,7 +139,9 @@ impl ZellijPlugin for State {
                 }
                 self.init_status_dir();
                 self.bind_open_key();
-                self.refresh_session_list();
+                self.permissions_granted = true;
+                // A `SessionUpdate` may already have come in; the timer settles it then.
+                self.arm_timer();
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
@@ -164,6 +170,7 @@ impl ZellijPlugin for State {
             }
             Event::Timer(elapsed) => {
                 self.timer_armed = false;
+                self.settle_permissions();
                 self.since_poll += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
                     self.since_poll = 0.0;
@@ -199,6 +206,7 @@ impl ZellijPlugin for State {
                     self.env_pending = false;
                     self.init_status_dir_from_env();
                 }
+                self.settle_permissions();
                 self.prune();
                 self.bar_changed()
             }
@@ -231,7 +239,11 @@ impl ZellijPlugin for State {
             return false;
         }
         if let PipeSource::Cli(pipe_id) = &pipe_message.source {
-            unblock_cli_pipe_input(pipe_id);
+            if self.permissions_live() {
+                unblock_cli_pipe_input(pipe_id);
+            } else {
+                self.pending_pipes.push(pipe_id.clone());
+            }
         }
         let Some(payload) = pipe_message.payload else {
             return false;
@@ -559,6 +571,9 @@ impl State {
     /// Zellij 0.45 only rescans other sessions on request, so without this `SessionUpdate`
     /// would list the current session only and live sessions elsewhere would look gone.
     fn refresh_session_list(&mut self) {
+        if !self.permissions_live() {
+            return;
+        }
         // get_session_list: needs ReadApplicationState; also pushes a fresh SessionUpdate.
         if let Ok(snapshot) = get_session_list() {
             self.live = Some(
@@ -569,6 +584,23 @@ impl State {
                     .collect(),
             );
             self.session_list_complete = true;
+        }
+    }
+
+    /// Calls right after `Granted` are denied by the host shim; a `SessionUpdate` proves it is live.
+    fn permissions_live(&self) -> bool {
+        self.permissions_granted && self.live.is_some()
+    }
+
+    fn settle_permissions(&mut self) {
+        if !self.permissions_live() {
+            return;
+        }
+        for pipe_id in self.pending_pipes.drain(..) {
+            unblock_cli_pipe_input(&pipe_id);
+        }
+        if !self.session_list_complete {
+            self.refresh_session_list();
         }
     }
 
