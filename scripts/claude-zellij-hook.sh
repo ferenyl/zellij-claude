@@ -42,6 +42,9 @@ main() {
     if [ "$event" = "SessionEnd" ]; then
         rm -f "$file"
     else
+        tmp=
+        # Removed on exit, so an interrupted hook leaves no temp file behind.
+        trap 'rm -f "$tmp"' EXIT
         tmp=$(mktemp "$dir/.tmp.XXXXXX") || return 0
         if printf '%s\n' "$record" >"$tmp"; then
             mv -f "$tmp" "$file"
@@ -54,7 +57,7 @@ main() {
     # Backgrounded and detached from Claude's stdio: `zellij pipe` waits for every
     # plugin listening on the pipe and can hang, so it is also time-limited.
     if command -v timeout >/dev/null 2>&1; then
-        timeout 5 zellij pipe --name claude-status -- "$record" </dev/null >/dev/null 2>&1 &
+        timeout 2 zellij pipe --name claude-status -- "$record" </dev/null >/dev/null 2>&1 &
     else
         zellij pipe --name claude-status -- "$record" </dev/null >/dev/null 2>&1 &
     fi

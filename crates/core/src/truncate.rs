@@ -1,4 +1,4 @@
-use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
+use unicode_width::UnicodeWidthStr;
 
 const ELLIPSIS: char = '…';
 
@@ -7,17 +7,17 @@ pub fn width(s: &str) -> usize {
     UnicodeWidthStr::width(s)
 }
 
-/// Cuts `s` to at most `max` cells without an ellipsis.
+/// Cuts `s` to at most `max` cells without an ellipsis. Measures with
+/// `width` on the whole string: `str::width` is not the sum of `char::width`
+/// (e.g. U+2764 + VS16 is 1 cell by char, 2 by str).
 pub fn fit(s: &str, max: usize) -> String {
     let mut out = String::new();
-    let mut used = 0;
     for c in s.chars() {
-        let w = c.width().unwrap_or(0);
-        if used + w > max {
+        out.push(c);
+        if width(&out) > max {
+            out.pop();
             break;
         }
-        used += w;
-        out.push(c);
     }
     out
 }
@@ -44,7 +44,10 @@ pub fn truncate_start(s: &str, max: usize) -> String {
         return String::new();
     }
     let reversed: String = s.chars().rev().collect();
-    let tail: String = fit(&reversed, max - 1).chars().rev().collect();
+    let mut tail: String = fit(&reversed, max - 1).chars().rev().collect();
+    while width(&tail) > max - 1 {
+        tail.remove(0);
+    }
     format!("{ELLIPSIS}{tail}")
 }
 
@@ -52,7 +55,7 @@ pub fn truncate_start(s: &str, max: usize) -> String {
 pub fn pad(s: &str, cells: usize) -> String {
     let mut out = fit(s, cells);
     let w = width(&out);
-    out.extend(std::iter::repeat_n(' ', cells - w));
+    out.extend(std::iter::repeat_n(' ', cells.saturating_sub(w)));
     out
 }
 
@@ -80,5 +83,23 @@ mod tests {
         assert_eq!(fit("日本語", 5), "日本");
         assert_eq!(truncate_end("日本語", 4), "日…");
         assert_eq!(pad("日", 3), "日 ");
+    }
+
+    #[test]
+    fn never_exceeds_max_with_variation_selectors() {
+        let samples = [
+            "\u{2764}\u{FE0F}",
+            "ab\u{2764}\u{FE0F}",
+            "\u{1F468}\u{200D}\u{1F469}\u{200D}\u{1F467}",
+            "x\u{2699}\u{FE0F}y",
+        ];
+        for s in samples {
+            for max in 0..8 {
+                assert!(width(&fit(s, max)) <= max, "fit {s:?} {max}");
+                assert!(width(&truncate_end(s, max)) <= max, "end {s:?} {max}");
+                assert!(width(&truncate_start(s, max)) <= max, "start {s:?} {max}");
+                assert_eq!(width(&pad(s, max)), max, "pad {s:?} {max}");
+            }
+        }
     }
 }

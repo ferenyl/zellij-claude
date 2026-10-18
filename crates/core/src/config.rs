@@ -118,7 +118,20 @@ pub struct Config {
     pub plugin_location: String,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self::defaults(Mode::Picker)
+    }
+}
+
 impl Config {
+    /// The session environment is only read without `status_dir`, or to expand its `~`.
+    pub fn needs_session_env(&self) -> bool {
+        self.status_dir
+            .as_ref()
+            .is_none_or(|dir| dir.starts_with("~"))
+    }
+
     /// Defaults for the given mode (`all_sessions` differs between picker and bar).
     pub fn defaults(mode: Mode) -> Self {
         Self {
@@ -546,5 +559,15 @@ mod tests {
 
         assert_eq!(config, Config::defaults(Mode::Picker));
         assert_eq!(warnings.len(), 2);
+    }
+
+    #[test]
+    fn session_env_is_needed_without_status_dir_or_with_tilde() {
+        let mut config = Config::default();
+        assert!(config.needs_session_env());
+        config.status_dir = Some(PathBuf::from("~/x"));
+        assert!(config.needs_session_env());
+        config.status_dir = Some(PathBuf::from("/abs/x"));
+        assert!(!config.needs_session_env());
     }
 }

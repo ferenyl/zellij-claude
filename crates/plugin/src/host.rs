@@ -17,6 +17,8 @@ const HOST_MOUNT: &str = "/host";
 pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
 const MAX_STATUS_FILES: usize = 500;
+/// Larger files are not status files and are counted as invalid.
+const MAX_STATUS_FILE_BYTES: u64 = 64 * 1024;
 
 pub fn unix_now() -> u64 {
     SystemTime::now()
@@ -44,6 +46,8 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
                 .is_some_and(|n| n.to_string_lossy().starts_with('-'))
         })
         .collect();
+    // read_dir order is undefined; a stable order keeps the same subset between polls.
+    paths.sort();
     let truncated = paths.len() > MAX_STATUS_FILES;
     paths.truncate(MAX_STATUS_FILES);
 
@@ -51,10 +55,7 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
     let mut invalid = 0;
     let now = unix_now();
     for path in paths {
-        match std::fs::read_to_string(path)
-            .map_err(|e| e.to_string())
-            .and_then(|json| StatusRecord::parse(&json))
-        {
+        match read_small_file(&path).and_then(|json| StatusRecord::parse(&json)) {
             Ok(record)
                 if record.zellij_session.is_empty()
                     || record.updated_at > now + MAX_CLOCK_SKEW_SECS => {}
@@ -67,6 +68,14 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
         invalid,
         truncated,
     })
+}
+
+fn read_small_file(path: &Path) -> Result<String, String> {
+    let len = std::fs::metadata(path).map_err(|e| e.to_string())?.len();
+    if len > MAX_STATUS_FILE_BYTES {
+        return Err(format!("status file too large ({len} bytes)"));
+    }
+    std::fs::read_to_string(path).map_err(|e| e.to_string())
 }
 
 /// Deletes a pruned session's status file. Missing files are fine: every plugin
