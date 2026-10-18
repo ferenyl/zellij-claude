@@ -13,6 +13,8 @@ use zellij_tile::prelude::*;
 
 /// `change_host_folder` remaps this WASI mount to the status directory.
 const HOST_MOUNT: &str = "/host";
+/// Records stamped further ahead than this are ignored.
+pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
 const MAX_STATUS_FILES: usize = 500;
 /// Larger files are not status files and are counted as invalid.
@@ -51,9 +53,12 @@ pub fn read_status_files() -> Result<StatusFiles, String> {
 
     let mut records = Vec::with_capacity(paths.len());
     let mut invalid = 0;
+    let now = unix_now();
     for path in paths {
         match read_small_file(&path).and_then(|json| StatusRecord::parse(&json)) {
-            Ok(record) if record.zellij_session.is_empty() => {}
+            Ok(record)
+                if record.zellij_session.is_empty()
+                    || record.updated_at > now + MAX_CLOCK_SKEW_SECS => {}
             Ok(record) => records.push(record),
             Err(_) => invalid += 1,
         }
