@@ -15,9 +15,9 @@ use zellij_tile::prelude::*;
 const HOST_MOUNT: &str = "/host";
 /// Records stamped further ahead than this are ignored.
 pub const MAX_CLOCK_SKEW_SECS: u64 = 60;
+const LAYER_FILE_MAX_AGE_SECS: u64 = 2 * 24 * 3600;
+const LAYER_FILE_REFRESH_SECS: u64 = 12 * 3600;
 /// Upper bound on status files read per poll, so a cluttered directory cannot stall the plugin.
-const LAYER_FILE_MAX_AGE_SECS: u64 = 7 * 24 * 3600;
-const LAYER_FILE_REFRESH_SECS: u64 = 24 * 3600;
 const MAX_STATUS_FILES: usize = 500;
 /// Larger files are not status files and are counted as invalid.
 const MAX_STATUS_FILE_BYTES: u64 = 64 * 1024;
@@ -113,7 +113,7 @@ pub fn layer_file_needs_refresh(zellij_pid: u32) -> bool {
 }
 
 /// Removes layer state files (and leftover temp files) of Zellij processes that are long
-/// gone. Live sessions rewrite theirs daily, see [`layer_file_needs_refresh`].
+/// gone. Live sessions rewrite theirs twice a day, see [`layer_file_needs_refresh`].
 pub fn remove_old_layer_files(own_zellij_pid: u32) {
     let Ok(entries) = std::fs::read_dir(Path::new(HOST_MOUNT)) else {
         return;

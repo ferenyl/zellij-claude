@@ -20,6 +20,11 @@ use claude_sessions_core::truncate::truncate_end;
 use zellij_tile::prelude::*;
 
 const PIPE_NAME: &str = "claude-status";
+/// `get_session_list` makes Zellij rescan every session and push a `SessionUpdate` to every
+/// plugin, so it runs less often than the status poll.
+const SESSION_SCAN_SECS: f64 = 10.0;
+/// CLI pipes kept while the permissions are not live; older ones are dropped.
+const MAX_PENDING_PIPES: usize = 64;
 
 #[derive(Default)]
 struct State {
@@ -48,6 +53,12 @@ struct State {
     poll_warning: Option<String>,
     /// Seconds since the status directory was last read.
     since_poll: f64,
+    /// Seconds since `get_session_list` last ran.
+    since_scan: f64,
+    /// Bar in an inactive tab, or picker closed. Polling and the timer stop until shown again.
+    hidden: bool,
+    /// Bar: counts of `sessions()`, updated when the store or the live sessions change.
+    counts: Counts,
     /// Blink phase of the waiting icon in the bar.
     blink_hidden: bool,
     /// A `set_timeout` is pending; there must only ever be one timer chain.
@@ -125,6 +136,7 @@ impl ZellijPlugin for State {
             EventType::HostFolderChanged,
             EventType::FailedToChangeHostFolder,
             EventType::BeforeClose,
+            EventType::Visible,
         ]);
     }
 
@@ -145,6 +157,7 @@ impl ZellijPlugin for State {
                 true
             }
             Event::PermissionRequestResult(PermissionStatus::Denied) => {
+                self.pending_pipes.clear();
                 self.last_error = Some("permissions denied: remove this plugin's entry in Zellij's permissions.kdl and reload".into());
                 true
             }
@@ -171,26 +184,25 @@ impl ZellijPlugin for State {
             Event::Timer(elapsed) => {
                 self.timer_armed = false;
                 self.settle_permissions();
+                if self.hidden {
+                    // The chain stops here; `resume` restarts it.
+                    return false;
+                }
                 self.since_poll += elapsed;
+                self.since_scan += elapsed;
                 if self.since_poll >= self.config().poll_interval_secs {
-                    self.since_poll = 0.0;
-                    self.refresh_session_list();
-                    if self.host_folder_ready {
-                        if self.config().mode == Mode::Bar
-                            && host::layer_file_needs_refresh(self.zellij_pid)
-                        {
-                            self.save_layers();
-                        }
-                        self.poll_status_files();
-                    } else if let Some(dir) = &self.status_dir {
-                        change_host_folder(dir.clone());
-                    }
+                    self.poll();
                 }
-                if self.config().blink_waiting {
-                    self.blink_hidden = !self.blink_hidden;
-                }
+                self.blink_hidden = self.blinking() && !self.blink_hidden;
                 self.arm_timer();
                 self.bar_changed()
+            }
+            Event::Visible(visible) if self.config().mode == Mode::Bar => {
+                self.hidden = !visible;
+                if visible {
+                    self.resume();
+                }
+                visible
             }
             Event::BeforeClose => {
                 // Best effort: the session may already be shutting down.
@@ -208,7 +220,7 @@ impl ZellijPlugin for State {
                 }
                 self.settle_permissions();
                 self.prune();
-                self.bar_changed()
+                !self.hidden && self.bar_changed()
             }
             Event::TabUpdate(tabs) => match self.config().mode {
                 Mode::Picker => {
@@ -242,6 +254,9 @@ impl ZellijPlugin for State {
             if self.permissions_live() {
                 unblock_cli_pipe_input(pipe_id);
             } else {
+                if self.pending_pipes.len() >= MAX_PENDING_PIPES {
+                    self.pending_pipes.remove(0);
+                }
                 self.pending_pipes.push(pipe_id.clone());
             }
         }
@@ -259,7 +274,7 @@ impl ZellijPlugin for State {
             }
             Err(error) => self.pipe_error = Some(format!("invalid pipe payload: {error}")),
         }
-        self.bar_changed()
+        !self.hidden && self.bar_changed()
     }
 
     fn render(&mut self, rows: usize, cols: usize) {
@@ -291,7 +306,7 @@ impl State {
     /// What the bar shows: error text, counts and whether the waiting icon is hidden.
     fn bar_view(&self) -> BarView {
         let error = self.last_error.clone();
-        let counts = Counts::from_sessions(&self.sessions());
+        let counts = self.counts;
         let hide = self.config().blink_waiting && self.blink_hidden && counts.waiting > 0;
         (error, counts, hide, self.has_issue())
     }
@@ -325,10 +340,15 @@ impl State {
         }
     }
 
+    /// The waiting icon blinks only while a session is waiting.
+    fn blinking(&self) -> bool {
+        self.config().blink_waiting && self.counts.waiting > 0
+    }
+
     /// One timer drives both polling and blinking; blinking needs a faster tick.
     fn tick_interval(&self) -> f64 {
         let poll = self.config().poll_interval_secs;
-        if self.config().blink_waiting {
+        if self.blinking() {
             poll.min(0.5)
         } else {
             poll
@@ -341,7 +361,7 @@ impl State {
             print!("{}", truncate_end(&format!("! {error}"), cols));
             return;
         }
-        let counts = Counts::from_sessions(&self.sessions());
+        let counts = self.counts;
         let config = self.config();
         let options = BarOptions {
             icons: self.icons(),
@@ -413,6 +433,7 @@ impl State {
     /// again must look like a fresh open, without stale tab state.
     fn close_picker(&mut self) {
         picker::close(self.isolation.take());
+        self.hidden = true;
         self.own_pane = None;
         self.last_tabs.clear();
     }
@@ -440,10 +461,13 @@ impl State {
             if let Some(isolation) = self.isolation.take() {
                 picker::restore(&isolation);
             }
+            self.hidden = hidden_outside;
         }
         if !moved && !became_visible(was_suppressed, is_suppressed) {
             return false;
         }
+        self.hidden = false;
+        self.resume();
         self.picker.reset_filter();
         if let Some((position, _)) = own {
             self.isolate_floating(own_id, position, manifest);
@@ -549,6 +573,29 @@ impl State {
         }
     }
 
+    /// Shown again: catch up at once and restart the timer.
+    fn resume(&mut self) {
+        self.since_scan = SESSION_SCAN_SECS;
+        self.poll();
+        self.arm_timer();
+    }
+
+    fn poll(&mut self) {
+        self.since_poll = 0.0;
+        if self.since_scan >= SESSION_SCAN_SECS {
+            self.since_scan = 0.0;
+            self.refresh_session_list();
+        }
+        if self.host_folder_ready {
+            if self.config().mode == Mode::Bar && host::layer_file_needs_refresh(self.zellij_pid) {
+                self.save_layers();
+            }
+            self.poll_status_files();
+        } else if let Some(dir) = &self.status_dir {
+            change_host_folder(dir.clone());
+        }
+    }
+
     fn poll_status_files(&mut self) {
         if !self.host_folder_ready {
             return;
@@ -584,6 +631,7 @@ impl State {
                     .collect(),
             );
             self.session_list_complete = true;
+            self.update_counts();
         }
     }
 
@@ -612,6 +660,13 @@ impl State {
             for (zellij_session, pane_id) in removed {
                 host::remove_status_file(&zellij_session, pane_id);
             }
+        }
+        self.update_counts();
+    }
+
+    fn update_counts(&mut self) {
+        if self.config().mode == Mode::Bar {
+            self.counts = Counts::from_sessions(&self.sessions());
         }
     }
 }
