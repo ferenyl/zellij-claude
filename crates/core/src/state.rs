@@ -153,12 +153,15 @@ impl Store {
     /// as a running terminal (after a short grace period for new panes); in a session
     /// that is not live, entries expire after `stale_after_secs`. `live` is `None` until the
     /// session list is complete; nothing is removed then. Returns the removed keys.
+    /// `SessionEnd` markers expire after `stale_after_secs` either way.
     pub fn prune(
         &mut self,
         live: Option<&[LiveSession]>,
         now: u64,
         stale_after_secs: u64,
     ) -> Vec<SessionKey> {
+        self.ended
+            .retain(|_, ended_at| now.saturating_sub(*ended_at) < stale_after_secs);
         let Some(live) = live else {
             return Vec::new();
         };
@@ -542,6 +545,17 @@ mod tests {
         let removed = store.prune(Some(&sessions), 115, 3600);
 
         assert_eq!(removed, vec![("work".into(), 9)]);
+    }
+
+    #[test]
+    fn prune_expires_old_session_end_markers() {
+        let mut store = Store::default();
+        store.apply(record("work", 1, "SessionEnd", 100));
+
+        store.prune(None, 200, 60);
+        store.apply(record("work", 1, "Stop", 50));
+
+        assert_eq!(states(&store), vec![("work".into(), 1, SessionState::Idle)]);
     }
 
     #[test]
