@@ -26,29 +26,38 @@ main() {
     esac
     command -v jq >/dev/null 2>&1 || return 0
 
-    input=$(cat) || return 0
-    event=$(printf '%s' "$input" | jq -r '.hook_event_name // empty' 2>/dev/null) || return 0
+    # One jq call (the hook runs on every tool use): event, notification type and the
+    # compact record, tab-separated. Compact JSON contains no raw tabs.
+    parsed=$(jq -r \
+        --arg session "$ZELLIJ_SESSION_NAME" \
+        --argjson pane "$ZELLIJ_PANE_ID" \
+        --argjson now "$(date +%s)" \
+        '(.hook_event_name // empty) as $event
+        | [
+            $event,
+            (.notification_type // ""),
+            ({
+                zellij_session: $session,
+                pane_id: $pane,
+                hook_event: $event,
+                notification_type: .notification_type,
+                cwd: .cwd,
+                claude_session_id: .session_id,
+                updated_at: $now
+            } | tojson)
+        ]
+        | join("\t")' 2>/dev/null) || return 0
+    [ -n "$parsed" ] || return 0
+    event=${parsed%%	*}
+    rest=${parsed#*	}
+    notification=${rest%%	*}
+    record=${rest#*	}
     [ -n "$event" ] || return 0
 
     dir=${CLAUDE_ZELLIJ_STATUS_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-zellij}
     mkdir -p "$dir" || return 0
     file="$dir/$ZELLIJ_SESSION_NAME-$ZELLIJ_PANE_ID.json"
 
-    record=$(printf '%s' "$input" | jq -c \
-        --arg session "$ZELLIJ_SESSION_NAME" \
-        --argjson pane "$ZELLIJ_PANE_ID" \
-        --argjson now "$(date +%s)" \
-        '{
-            zellij_session: $session,
-            pane_id: $pane,
-            hook_event: .hook_event_name,
-            notification_type: .notification_type,
-            cwd: .cwd,
-            claude_session_id: .session_id,
-            updated_at: $now
-        }' 2>/dev/null) || return 0
-
-    notification=$(printf '%s' "$input" | jq -r '.notification_type // empty' 2>/dev/null)
     prev_event='' prev_notification=''
     if [ -r "$file" ]; then
         prev=$(jq -r '[.hook_event // "", .notification_type // ""] | join("\t")' "$file" 2>/dev/null)
