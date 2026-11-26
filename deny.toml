@@ -3,6 +3,10 @@ targets = ["x86_64-unknown-linux-gnu", "wasm32-wasip1"]
 
 [advisories]
 version = 2
+ignore = [
+    { id = "RUSTSEC-2026-0543", reason = "chrono unmaintained; transitive via zellij-tile -> zellij-utils -> log4rs, no upgrade available" },
+    { id = "RUSTSEC-2026-0542", reason = "humantime unmaintained; transitive via zellij-tile -> zellij-utils, no upgrade available" },
+]
 
 [licenses]
 version = 2
